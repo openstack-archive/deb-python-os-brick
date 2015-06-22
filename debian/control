@@ -1,0 +1,105 @@
+Source: python-os-brick
+Section: python
+Priority: optional
+Maintainer: PKG OpenStack <openstack-devel@lists.alioth.debian.org>
+Uploaders: James Page <james.page@ubuntu.com>,
+Build-Depends: debhelper (>= 9),
+               dh-python,
+               openstack-pkg-tools,
+               python-all,
+               python-pbr,
+               python-setuptools,
+               python-sphinx,
+               python3-all,
+               python3-pbr,
+               python3-setuptools,
+Build-Depends-Indep: python-babel (>= 1.3),
+                     python-coverage (>= 3.6),
+                     python-eventlet (>= 0.17.3),
+                     python-hacking,
+                     python-oslo.concurrency (>= 1.8.0),
+                     python-oslo.i18n (>= 1.5.0),
+                     python-oslo.log (>= 1.0.0),
+                     python-oslo.serialization (>= 1.4.0),
+                     python-oslo.utils (>= 1.4.0),
+                     python-oslosphinx (>= 2.5.0),
+                     python-oslotest (>= 1.5.1),
+                     python-retrying (>= 1.2.3),
+                     python-six (>= 1.9.0),
+                     python-testscenarios (>= 0.4),
+                     python-testtools (>= 0.9.36),
+                     python3-babel (>= 1.3),
+                     python3-eventlet (>= 0.17.3),
+                     python3-oslo.concurrency (>= 1.8.0),
+                     python3-oslo.i18n (>= 1.5.0),
+                     python3-oslo.log (>= 1.0.0),
+                     python3-oslo.serialization (>= 1.4.0),
+                     python3-oslo.utils (>= 1.4.0),
+                     python3-oslotest (>= 1.5.1),
+                     python3-retrying (>= 1.2.3),
+                     python3-six (>= 1.9.0),
+                     python3-testscenarios (>= 0.4),
+                     python3-testtools (>= 0.9.36),
+                     subunit (>= 0.0.18),
+                     testrepository (>= 0.0.18),
+Standards-Version: 3.9.6
+Vcs-Browser: http://anonscm.debian.org/gitweb/?p=openstack/python-os-brick.git
+Vcs-Git: git://anonscm.debian.org/openstack/python-os-brick.git
+Homepage: http://github.com/openstack/os-brick
+
+Package: python-os-brick
+Architecture: all
+Depends: python-babel (>= 1.3),
+         python-eventlet (>= 0.17.3),
+         python-oslo.concurrency (>= 1.8.0),
+         python-oslo.i18n (>= 1.5.0),
+         python-oslo.log (>= 1.0.0),
+         python-oslo.serialization (>= 1.4.0),
+         python-oslo.utils (>= 1.4.0),
+         python-retrying (>= 1.2.3),
+         python-six (>= 1.9.0),
+         ${misc:Depends},
+         ${python:Depends},
+Suggests: python-os-brick-doc,
+Description: Library for managing local volume attaches - Python 2.x
+ OpenStack Cinder brick library for managing local volume attaches.
+ .
+ Features discovery of volumes being attached to a host for many
+ transport protocols and removal of volumes from a host.
+ .
+ This package contains the Python 2.x module.
+
+Package: python3-os-brick
+Architecture: all
+Depends: python3-babel (>= 1.3),
+         python3-eventlet (>= 0.17.3),
+         python3-oslo.concurrency (>= 1.8.0),
+         python3-oslo.i18n (>= 1.5.0),
+         python3-oslo.log (>= 1.0.0),
+         python3-oslo.serialization (>= 1.4.0),
+         python3-oslo.utils (>= 1.4.0),
+         python3-retrying (>= 1.2.3),
+         python3-six (>= 1.9.0),
+         ${misc:Depends},
+         ${python3:Depends},
+Suggests: python-os-brick-doc,
+Description: Library for managing local volume attaches - Python 3.x
+ OpenStack Cinder brick library for managing local volume attaches.
+ .
+ Features discovery of volumes being attached to a host for many
+ transport protocols and removal of volumes from a host.
+ .
+ This package contains the Python 3.x module.
+
+Package: python-os-brick-doc
+Section: doc
+Architecture: all
+Depends: ${misc:Depends},
+         ${sphinxdoc:Depends},
+Description: Library for managing local volume attaches - doc
+ OpenStack Cinder brick library for managing local volume attaches.
+ .
+ Features discovery of volumes being attached to a host for many
+ transport protocols and removal of volumes from a host.
+ .
+ This package contains the documentation.

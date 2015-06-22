@@ -1,0 +1,5 @@
+python-os-brick (0.2.0-1) unstable; urgency=medium
+
+  * Initial release (Closes: #789601).
+
+ -- James Page <james.page@ubuntu.com>  Mon, 22 Jun 2015 14:29:41 +0100
