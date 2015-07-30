@@ -53,7 +53,7 @@ class BrickException(Exception):
                 # log the issue and the kwargs
                 LOG.exception(_LE("Exception in string format operation. "
                                   "msg='%s'"), self.message)
-                for name, value in kwargs.iteritems():
+                for name, value in kwargs.items():
                     LOG.error(_LE("%(name)s: %(value)s"), {'name': name,
                                                            'value': value})
 
