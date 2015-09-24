@@ -22,6 +22,7 @@ each of the supported transport protocols.
 
 import abc
 import copy
+import glob
 import json
 import os
 import platform
@@ -60,6 +61,19 @@ DEVICE_SCAN_ATTEMPTS_DEFAULT = 3
 MULTIPATH_ERROR_REGEX = re.compile("\w{3} \d+ \d\d:\d\d:\d\d \|.*$")
 MULTIPATH_DEV_CHECK_REGEX = re.compile("\s+dm-\d+\s+")
 MULTIPATH_PATH_CHECK_REGEX = re.compile("\s+\d+:\d+:\d+:\d+\s+")
+
+ISCSI = "ISCSI"
+ISER = "ISER"
+FIBRE_CHANNEL = "FIBRE_CHANNEL"
+AOE = "AOE"
+NFS = "NFS"
+GLUSTERFS = "GLUSTERFS"
+LOCAL = "LOCAL"
+HUAWEISDSHYPERVISOR = "HUAWEISDSHYPERVISOR"
+HGST = "HGST"
+RBD = "RBD"
+SCALEIO = "SCALEIO"
+SCALITY = "SCALITY"
 
 
 def _check_multipathd_running(root_helper, enforce_multipath):
@@ -146,21 +160,18 @@ class InitiatorConnector(executor.Executor):
         LOG.debug("Factory for %(protocol)s on %(arch)s",
                   {'protocol': protocol, 'arch': arch})
         protocol = protocol.upper()
-        if protocol == "ISCSI":
+        if protocol in [ISCSI, ISER]:
+            # override transport kwarg for requests not comming
+            # from the nova LibvirtISERVolumeDriver
+            if protocol == ISER:
+                kwargs.update({'transport': 'iser'})
             return ISCSIConnector(root_helper=root_helper,
                                   driver=driver,
                                   execute=execute,
                                   use_multipath=use_multipath,
                                   device_scan_attempts=device_scan_attempts,
                                   *args, **kwargs)
-        elif protocol == "ISER":
-            return ISERConnector(root_helper=root_helper,
-                                 driver=driver,
-                                 execute=execute,
-                                 use_multipath=use_multipath,
-                                 device_scan_attempts=device_scan_attempts,
-                                 *args, **kwargs)
-        elif protocol == "FIBRE_CHANNEL":
+        elif protocol == FIBRE_CHANNEL:
             if arch in (S390, S390X):
                 return FibreChannelConnectorS390X(
                     root_helper=root_helper,
@@ -177,45 +188,45 @@ class InitiatorConnector(executor.Executor):
                     use_multipath=use_multipath,
                     device_scan_attempts=device_scan_attempts,
                     *args, **kwargs)
-        elif protocol == "AOE":
+        elif protocol == AOE:
             return AoEConnector(root_helper=root_helper,
                                 driver=driver,
                                 execute=execute,
                                 device_scan_attempts=device_scan_attempts,
                                 *args, **kwargs)
-        elif protocol == "NFS" or protocol == "GLUSTERFS":
+        elif protocol in (NFS, GLUSTERFS, SCALITY):
             return RemoteFsConnector(mount_type=protocol.lower(),
                                      root_helper=root_helper,
                                      driver=driver,
                                      execute=execute,
                                      device_scan_attempts=device_scan_attempts,
                                      *args, **kwargs)
-        elif protocol == "LOCAL":
+        elif protocol == LOCAL:
             return LocalConnector(root_helper=root_helper,
                                   driver=driver,
                                   execute=execute,
                                   device_scan_attempts=device_scan_attempts,
                                   *args, **kwargs)
-        elif protocol == "HUAWEISDSHYPERVISOR":
+        elif protocol == HUAWEISDSHYPERVISOR:
             return HuaweiStorHyperConnector(
                 root_helper=root_helper,
                 driver=driver,
                 execute=execute,
                 device_scan_attempts=device_scan_attempts,
                 *args, **kwargs)
-        elif protocol == "HGST":
+        elif protocol == HGST:
             return HGSTConnector(root_helper=root_helper,
                                  driver=driver,
                                  execute=execute,
                                  device_scan_attempts=device_scan_attempts,
                                  *args, **kwargs)
-        elif protocol == "RBD":
+        elif protocol == RBD:
             return RBDConnector(root_helper=root_helper,
                                 driver=driver,
                                 execute=execute,
                                 device_scan_attempts=device_scan_attempts,
                                 *args, **kwargs)
-        elif protocol == "SCALEIO":
+        elif protocol == SCALEIO:
             return ScaleIOConnector(
                 root_helper=root_helper,
                 driver=driver,
@@ -281,22 +292,63 @@ class FakeConnector(InitiatorConnector):
 
 class ISCSIConnector(InitiatorConnector):
     """Connector class to attach/detach iSCSI volumes."""
+    supported_transports = ['be2iscsi', 'bnx2i', 'cxgb3i', 'default',
+                            'cxgb4i', 'qla4xxx', 'ocs', 'iser']
 
     def __init__(self, root_helper, driver=None,
                  execute=putils.execute, use_multipath=False,
                  device_scan_attempts=DEVICE_SCAN_ATTEMPTS_DEFAULT,
-                 *args, **kwargs):
+                 transport='default', *args, **kwargs):
         self._linuxscsi = linuxscsi.LinuxSCSI(root_helper, execute)
         super(ISCSIConnector, self).__init__(
             root_helper, driver=driver,
             execute=execute,
             device_scan_attempts=device_scan_attempts,
-            *args, **kwargs)
+            transport=transport, *args, **kwargs)
         self.use_multipath = use_multipath
+        self.transport = self._validate_iface_transport(transport)
 
     def set_execute(self, execute):
         super(ISCSIConnector, self).set_execute(execute)
         self._linuxscsi.set_execute(execute)
+
+    def _validate_iface_transport(self, transport_iface):
+        """Check that given iscsi_iface uses only supported transports
+
+        Accepted transport names for provided iface param are
+        be2iscsi, bnx2i, cxgb3i, cxgb4i, default, qla4xxx, ocs or iser.
+        Note the difference between transport and iface;
+        unlike default(iscsi_tcp)/iser, this is not one and the same for
+        offloaded transports, where the default format is
+        transport_name.hwaddress
+        """
+        # Note that default(iscsi_tcp) and iser do not require a separate
+        # iface file, just the transport is enough and do not need to be
+        # validated. This is not the case for the other entries in
+        # supported_transports array.
+        if transport_iface in ['default', 'iser']:
+            return transport_iface
+        # Will return (6) if iscsi_iface file was not found, or (2) if iscsid
+        # could not be contacted
+        out = self._run_iscsiadm_bare(['-m',
+                                       'iface',
+                                       '-I',
+                                       transport_iface],
+                                      check_exit_code=[0, 2, 6])[0] or ""
+        LOG.debug("iscsiadm %(iface)s configuration: stdout=%(out)s.",
+                  {'iface': transport_iface, 'out': out})
+        for data in [line.split() for line in out.splitlines()]:
+            if data[0] == 'iface.transport_name':
+                if data[2] in self.supported_transports:
+                    return transport_iface
+
+        LOG.warn(_LW("No useable transport found for iscsi iface %s. "
+                     "Falling back to default transport."),
+                 transport_iface)
+        return 'default'
+
+    def _get_transport(self):
+        return self.transport
 
     def _iterate_all_targets(self, connection_properties):
         for ip, iqn, lun in self._get_all_targets(connection_properties):
@@ -327,17 +379,59 @@ class ISCSIConnector(InitiatorConnector):
             return zip(connection_properties['target_portals'],
                        connection_properties['target_iqns'])
 
-        # Discover and return every available target
-        out = self._run_iscsiadm_bare(['-m',
-                                       'discovery',
-                                       '-t',
-                                       'sendtargets',
-                                       '-p',
-                                       connection_properties['target_portal']],
-                                      check_exit_code=[0, 255])[0] \
-            or ""
+        out = None
+        if connection_properties.get('discovery_auth_method'):
+            try:
+                self._run_iscsiadm_update_discoverydb(connection_properties)
+            except putils.ProcessExecutionError as exception:
+                # iscsiadm returns 6 for "db record not found"
+                if exception.exit_code == 6:
+                    # Create a new record for this target and update the db
+                    self._run_iscsiadm_bare(
+                        ['-m', 'discoverydb',
+                         '-t', 'sendtargets',
+                         '-p', connection_properties['target_portal'],
+                         '--op', 'new'],
+                        check_exit_code=[0, 255])
+                    self._run_iscsiadm_update_discoverydb(
+                        connection_properties
+                    )
+                else:
+                    LOG.error(_LE("Unable to find target portal: "
+                                  "%(target_portal)s."),
+                              {'target_portal': connection_properties[
+                                  'target_portal']})
+                    raise
+            out = self._run_iscsiadm_bare(
+                ['-m', 'discoverydb',
+                 '-t', 'sendtargets',
+                 '-p', connection_properties['target_portal'],
+                 '--discover'],
+                check_exit_code=[0, 255])[0] or ""
+        else:
+            out = self._run_iscsiadm_bare(
+                ['-m', 'discovery',
+                 '-t', 'sendtargets',
+                 '-p', connection_properties['target_portal']],
+                check_exit_code=[0, 255])[0] or ""
 
         return self._get_target_portals_from_iscsiadm_output(out)
+
+    def _run_iscsiadm_update_discoverydb(self, connection_properties):
+        return self._execute(
+            'iscsiadm',
+            '-m', 'discoverydb',
+            '-t', 'sendtargets',
+            '-p', connection_properties['target_portal'],
+            '--op', 'update',
+            '-n', "discovery.sendtargets.auth.authmethod",
+            '-v', connection_properties['discovery_auth_method'],
+            '-n', "discovery.sendtargets.auth.username",
+            '-v', connection_properties['discovery_auth_username'],
+            '-n', "discovery.sendtargets.auth.password",
+            '-v', connection_properties['discovery_auth_password'],
+            run_as_root=True,
+            root_helper=self._root_helper)
 
     @synchronized('connect_volume')
     def connect_volume(self, connection_properties):
@@ -354,7 +448,11 @@ class ISCSIConnector(InitiatorConnector):
 
         if self.use_multipath:
             # Multipath installed, discovering other targets if available
-            ips_iqns = self._discover_iscsi_portals(connection_properties)
+            try:
+                ips_iqns = self._discover_iscsi_portals(connection_properties)
+            except Exception:
+                raise exception.TargetPortalNotFound(
+                    target_portal=connection_properties['target_portal'])
 
             if not connection_properties.get('target_iqns'):
                 # There are two types of iSCSI multipath devices. One which
@@ -388,7 +486,8 @@ class ISCSIConnector(InitiatorConnector):
                     break
                 else:
                     LOG.warning(_LW(
-                        'Failed to login to any of the iSCSI targets.'))
+                        'Failed to connect to iSCSI portal %(portal)s.'),
+                        {'portal': props['target_portal']})
 
             host_devices = self._get_device_path(target_props)
 
@@ -401,7 +500,7 @@ class ISCSIConnector(InitiatorConnector):
                 raise exception.VolumeDeviceNotFound(device=host_devices)
 
             LOG.warning(_LW("ISCSI volume not yet found at: %(host_devices)s. "
-                            "Will rescan & retry.  Try number: %(tries)s"),
+                            "Will rescan & retry.  Try number: %(tries)s."),
                         {'host_devices': host_devices,
                          'tries': tries})
 
@@ -409,6 +508,8 @@ class ISCSIConnector(InitiatorConnector):
             if self.use_multipath:
                 self._rescan_iscsi()
             else:
+                if (tries):
+                    host_devices = self._get_device_path(target_props)
                 self._run_iscsiadm(target_props, ("--rescan",))
 
             tries = tries + 1
@@ -431,6 +532,9 @@ class ISCSIConnector(InitiatorConnector):
             multipath_device = self._get_multipath_device_name(host_device)
             if multipath_device is not None:
                 host_device = multipath_device
+                LOG.debug("Unable to find multipath device name for "
+                          "volume. Only using path %(device)s "
+                          "for volume.", {'device': host_device})
 
         device_info['path'] = host_device
         return device_info
@@ -444,12 +548,6 @@ class ISCSIConnector(InitiatorConnector):
         target_iqn(s) - iSCSI Qualified Name
         target_lun(s) - LUN id of the volume
         """
-        # Moved _rescan_iscsi and _rescan_multipath
-        # from _disconnect_volume_multipath_iscsi to here.
-        # Otherwise, if we do rescan after _linuxscsi.remove_multipath_device
-        # but before logging out, the removed devices under /dev/disk/by-path
-        # will reappear after rescan.
-        self._rescan_iscsi()
         if self.use_multipath:
             self._rescan_multipath()
             host_device = multipath_device = None
@@ -480,7 +578,13 @@ class ISCSIConnector(InitiatorConnector):
     def _disconnect_volume_iscsi(self, connection_properties):
         # remove the device from the scsi subsystem
         # this eliminates any stale entries until logout
-        host_device = self._get_device_path(connection_properties)[0]
+        host_devices = self._get_device_path(connection_properties)
+
+        if host_devices:
+            host_device = host_devices[0]
+        else:
+            return
+
         dev_name = self._linuxscsi.get_name_from_path(host_device)
         if dev_name:
             self._linuxscsi.remove_scsi_device(dev_name)
@@ -494,19 +598,31 @@ class ISCSIConnector(InitiatorConnector):
 
         # NOTE(vish): Only disconnect from the target if no luns from the
         #             target are in use.
-        device_prefix = ("/dev/disk/by-path/ip-%(portal)s-iscsi-%(iqn)s-lun-" %
+        device_byname = ("ip-%(portal)s-iscsi-%(iqn)s-lun-" %
                          {'portal': connection_properties['target_portal'],
                           'iqn': connection_properties['target_iqn']})
         devices = self.driver.get_all_block_devices()
-        devices = [dev for dev in devices if dev.startswith(device_prefix)
+        devices = [dev for dev in devices if (device_byname in dev
+                                              and
+                                              dev.startswith(
+                                                  '/dev/disk/by-path/'))
                    and os.path.exists(dev)]
-
         if not devices:
             self._disconnect_from_iscsi_portal(connection_properties)
 
     def _get_device_path(self, connection_properties):
-        return ["/dev/disk/by-path/ip-%s-iscsi-%s-lun-%s" % x for x in
-                self._get_all_targets(connection_properties)]
+        if self._get_transport() == "default":
+            return ["/dev/disk/by-path/ip-%s-iscsi-%s-lun-%s" % x for x in
+                    self._get_all_targets(connection_properties)]
+        else:
+            # we are looking for paths in the format :
+            # /dev/disk/by-path/pci-XXXX:XX:XX.X-ip-PORTAL:PORT-iscsi-IQN-lun-LUN_ID
+            device_list = []
+            for x in self._get_all_targets(connection_properties):
+                look_for_device = glob.glob('/dev/disk/by-path/*ip-%s-iscsi-%s-lun-%s' % x)  # noqa
+                if look_for_device:
+                    device_list.extend(look_for_device)
+            return device_list
 
     def get_initiator(self):
         """Secure helper to read file as root."""
@@ -633,7 +749,9 @@ class ISCSIConnector(InitiatorConnector):
         except putils.ProcessExecutionError as exc:
             # iscsiadm returns 21 for "No records found" after version 2.0-871
             if exc.exit_code in [21, 255]:
-                self._run_iscsiadm(connection_properties, ('--op', 'new'))
+                self._run_iscsiadm(connection_properties,
+                                   ('--interface', self._get_transport(),
+                                    '--op', 'new'))
             else:
                 raise
 
@@ -714,7 +832,12 @@ class ISCSIConnector(InitiatorConnector):
             devices = list(os.walk('/dev/disk/by-path'))[0][-1]
         except IndexError:
             return []
-        return [entry for entry in devices if entry.startswith("ip-")]
+        # For iSCSI HBAs, look at an offset of len('pci-0000:00:00.0')
+        return [entry for entry in devices if (entry.startswith("ip-")
+                                               or (entry.startswith("pci-")
+                                                   and
+                                                   entry.find("ip-", 16, 21)
+                                                   >= 16))]
 
     def _disconnect_mpath(self, connection_properties, ips_iqns):
         for ip, iqn in ips_iqns:
@@ -788,15 +911,6 @@ class ISCSIConnector(InitiatorConnector):
         self._run_multipath(['-r'], check_exit_code=[0, 1, 21])
 
 
-class ISERConnector(ISCSIConnector):
-
-    def _get_device_path(self, iser_properties):
-        return ("/dev/disk/by-path/ip-%s-iser-%s-lun-%s" %
-                (iser_properties['target_portal'],
-                 iser_properties['target_iqn'],
-                 iser_properties.get('target_lun', 0)))
-
-
 class FibreChannelConnector(InitiatorConnector):
     """Connector class to attach/detach Fibre Channel volumes."""
 
@@ -845,8 +959,7 @@ class FibreChannelConnector(InitiatorConnector):
         """Attach the volume to instance_name.
 
         connection_properties for Fibre Channel must include:
-        target_portal - ip and optional port
-        target_iqn - iSCSI Qualified Name
+        target_wwn - World Wide Name
         target_lun - LUN id of the volume
         """
         LOG.debug("execute = %s", self._execute)
@@ -881,8 +994,8 @@ class FibreChannelConnector(InitiatorConnector):
                 LOG.error(_LE("Fibre Channel volume device not found."))
                 raise exception.NoFibreChannelVolumeDeviceFound()
 
-            LOG.warning(_LW("Fibre volume not yet found. "
-                            "Will rescan & retry.  Try number: %(tries)s"),
+            LOG.warning(_LW("Fibre Channel volume device not yet found. "
+                            "Will rescan & retry.  Try number: %(tries)s."),
                         {'tries': tries})
 
             self._linuxfc.rescan_hosts(hbas)
@@ -901,19 +1014,35 @@ class FibreChannelConnector(InitiatorConnector):
                       "(after %(tries)s rescans)",
                       {'name': self.device_name, 'tries': tries})
 
+        # find out the WWN of the device
+        device_wwn = self._linuxscsi.get_scsi_wwn(self.host_device)
+        LOG.debug("Device WWN = '%(wwn)s'", {'wwn': device_wwn})
+
         # see if the new drive is part of a multipath
         # device.  If so, we'll use the multipath device.
         if self.use_multipath:
-            mdev_info = self._linuxscsi.find_multipath_device(self.device_name)
-            if mdev_info is not None:
-                LOG.debug("Multipath device discovered %(device)s",
-                          {'device': mdev_info['device']})
-                device_path = mdev_info['device']
-                device_info['multipath_id'] = mdev_info['id']
+
+            path = self._linuxscsi.find_multipath_device_path(device_wwn)
+            if path is not None:
+                LOG.debug("Multipath device path discovered %(device)s",
+                          {'device': path})
+                device_path = path
+                # for temporary backwards compatibility
+                device_info['multipath_id'] = device_wwn
             else:
-                # we didn't find a multipath device.
-                # so we assume the kernel only sees 1 device
-                device_path = self.host_device
+                mpath_info = self._linuxscsi.find_multipath_device(
+                    self.device_name)
+                if mpath_info:
+                    device_path = mpath_info['device']
+                    # for temporary backwards compatibility
+                    device_info['multipath_id'] = device_wwn
+                else:
+                    # we didn't find a multipath device.
+                    # so we assume the kernel only sees 1 device
+                    device_path = self.host_device
+                    LOG.debug("Unable to find multipath device name for "
+                              "volume. Using path %(device)s for volume.",
+                              {'device': self.host_device})
         else:
             device_path = self.host_device
 
@@ -969,28 +1098,28 @@ class FibreChannelConnector(InitiatorConnector):
         """Detach the volume from instance_name.
 
         connection_properties for Fibre Channel must include:
-        target_wwn - iSCSI Qualified Name
+        target_wwn - World Wide Name
         target_lun - LUN id of the volume
         """
 
-        # If this is a multipath device, we need to search again
-        # and make sure we remove all the devices. Some of them
-        # might not have shown up at attach time.
-        if self.use_multipath and 'multipath_id' in device_info:
-            multipath_id = device_info['multipath_id']
-            mdev_info = self._linuxscsi.find_multipath_device(multipath_id)
-            devices = mdev_info['devices']
-            self._linuxscsi.flush_multipath_device(multipath_id)
-        else:
-            devices = []
-            volume_paths = self._get_volume_paths(connection_properties)
-            for path in volume_paths:
-                real_path = self._linuxscsi.get_name_from_path(path)
-                device_info = self._linuxscsi.get_device_info(real_path)
-                devices.append(device_info)
+        devices = []
+        volume_paths = self._get_volume_paths(connection_properties)
+        wwn = None
+        for path in volume_paths:
+            real_path = self._linuxscsi.get_name_from_path(path)
+            if not wwn:
+                wwn = self._linuxscsi.get_scsi_wwn(path)
+            device_info = self._linuxscsi.get_device_info(real_path)
+            devices.append(device_info)
 
         LOG.debug("devices to remove = %s", devices)
         self._remove_devices(connection_properties, devices)
+
+        if self.use_multipath:
+            # There is a bug in multipath where the flushing
+            # doesn't remove the entry if friendly names are on
+            # we'll try anyway.
+            self._linuxscsi.flush_multipath_device(wwn)
 
     def _remove_devices(self, connection_properties, devices):
         # There may have been more than 1 device mounted
@@ -1059,8 +1188,8 @@ class FibreChannelConnectorS390X(FibreChannelConnector):
 
     def _get_lun_string(self, lun):
         target_lun = 0
-        if lun < 256:
-            target_lun = "0x00%02x000000000000" % lun
+        if lun <= 0xffff:
+            target_lun = "0x%04x000000000000" % lun
         elif lun <= 0xffffffff:
             target_lun = "0x%08x00000000" % lun
         return target_lun
@@ -1209,14 +1338,11 @@ class RemoteFsConnector(InitiatorConnector):
         conn = kwargs.get('conn')
         if conn:
             mount_point_base = conn.get('mount_point_base')
-            if mount_type.lower() == 'nfs':
-                kwargs['nfs_mount_point_base'] =\
-                    kwargs.get('nfs_mount_point_base') or\
-                    mount_point_base
-            elif mount_type.lower() == 'glusterfs':
-                kwargs['glusterfs_mount_point_base'] =\
-                    kwargs.get('glusterfs_mount_point_base') or\
-                    mount_point_base
+            mount_type_lower = mount_type.lower()
+            if mount_type_lower in ('nfs', 'glusterfs', 'scality'):
+                kwargs[mount_type_lower + '_mount_point_base'] = (
+                    kwargs.get(mount_type_lower + '_mount_point_base') or
+                    mount_point_base)
         else:
             LOG.warning(_LW("Connection details not present."
                             " RemoteFsClient may not initialize properly."))
@@ -1691,7 +1817,7 @@ class ScaleIOConnector(InitiatorConnector):
             raise exception.BrickException(message=msg)
 
         if r.status_code != 200 and "errorCode" in sdc_id:
-            msg = (_("Error getting sdc id from ip %(sdc_ip): %(err)s") %
+            msg = (_("Error getting sdc id from ip %(sdc_ip)s: %(err)s") %
                    {'sdc_ip': self.local_sdc_ip, 'err': sdc_id['message']})
 
             LOG.error(msg)

@@ -14,6 +14,7 @@
 
 import os
 import os.path
+import time
 
 import mock
 from oslo_log import log as logging
@@ -50,7 +51,11 @@ class LinuxSCSITestCase(base.TestCase):
         disk_path = ("/dev/disk/by-path/ip-10.10.220.253:3260-"
                      "iscsi-iqn.2000-05.com.3pardata:21810002ac00383d-lun-0")
         name = self.linuxscsi.get_name_from_path(disk_path)
-        self.assertEqual(name, device_name)
+        self.assertEqual(device_name, name)
+        disk_path = ("/dev/disk/by-path/pci-0000:00:00.0-ip-10.9.8.7:3260-"
+                     "iscsi-iqn.2000-05.com.openstack:2180002ac00383d-lun-0")
+        name = self.linuxscsi.get_name_from_path(disk_path)
+        self.assertEqual(device_name, name)
         realpath_mock.return_value = "bogus"
         name = self.linuxscsi.get_name_from_path(disk_path)
         self.assertIsNone(name)
@@ -92,6 +97,54 @@ class LinuxSCSITestCase(base.TestCase):
         self.linuxscsi.flush_multipath_devices()
         expected_commands = [('multipath -F')]
         self.assertEqual(expected_commands, self.cmds)
+
+    def test_get_scsi_wwn(self):
+        fake_path = '/dev/disk/by-id/somepath'
+        fake_wwn = '1234567890'
+
+        def fake_execute(*cmd, **kwargs):
+            return fake_wwn, None
+
+        self.linuxscsi._execute = fake_execute
+        wwn = self.linuxscsi.get_scsi_wwn(fake_path)
+        self.assertEqual(fake_wwn, wwn)
+
+    @mock.patch.object(os.path, 'exists', return_value=True)
+    def test_find_multipath_device_path(self, exists_mock):
+        fake_wwn = '1234567890'
+        found_path = self.linuxscsi.find_multipath_device_path(fake_wwn)
+        expected_path = '/dev/disk/by-id/dm-uuid-mpath-%s' % fake_wwn
+        self.assertEqual(expected_path, found_path)
+
+    @mock.patch.object(os.path, 'exists')
+    def test_find_multipath_device_path_mapper(self, exists_mock):
+        # the wait loop tries 3 times before it gives up
+        # we want to test failing to find the
+        # /dev/disk/by-id/dm-uuid-mpath-<WWN> path
+        # but finding the
+        # /dev/mapper/<WWN> path
+        exists_mock.side_effect = [False, False, False, True]
+        fake_wwn = '1234567890'
+        found_path = self.linuxscsi.find_multipath_device_path(fake_wwn)
+        expected_path = '/dev/mapper/%s' % fake_wwn
+        self.assertEqual(expected_path, found_path)
+
+    @mock.patch.object(os.path, 'exists', return_value=False)
+    @mock.patch.object(time, 'sleep')
+    def test_find_multipath_device_path_fail(self, exists_mock, sleep_mock):
+        fake_wwn = '1234567890'
+        found_path = self.linuxscsi.find_multipath_device_path(fake_wwn)
+        expected_path = None
+        self.assertEqual(expected_path, found_path)
+
+    @mock.patch.object(os.path, 'exists', return_value=False)
+    @mock.patch.object(time, 'sleep')
+    def test_wait_for_path_not_found(self, exists_mock, sleep_mock):
+        path = "/dev/disk/by-id/dm-uuid-mpath-%s" % '1234567890'
+        self.assertRaisesRegexp(exception.VolumeDeviceNotFound,
+                                r'Volume device not found at %s' % path,
+                                self.linuxscsi.wait_for_path,
+                                path)
 
     @mock.patch.object(linuxscsi.LinuxSCSI, 'find_multipath_device')
     @mock.patch.object(os.path, 'exists', return_value=True)
