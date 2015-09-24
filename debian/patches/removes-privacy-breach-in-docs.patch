@@ -1,0 +1,24 @@
+Description: Removes privacy breach in docs
+ Upstream doc is adding an image hosted on https://img.shields.io which is a
+ privacy breach. Let's patch this out!
+Author: Thomas Goirand <zigo@debian.org>
+Forwarded: no
+Last-Update: 2015-09-24
+
+--- python-os-brick-0.5.0.orig/README.rst
++++ python-os-brick-0.5.0/README.rst
+@@ -2,14 +2,6 @@
+ brick
+ ===============================
+ 
+-.. image:: https://img.shields.io/pypi/v/os-brick.svg
+-    :target: https://pypi.python.org/pypi/os-brick/
+-    :alt: Latest Version
+-
+-.. image:: https://img.shields.io/pypi/dm/os-brick.svg
+-    :target: https://pypi.python.org/pypi/os-brick/
+-    :alt: Downloads
+-
+ OpenStack Cinder brick library for managing local volume attaches
+ 
+ 
