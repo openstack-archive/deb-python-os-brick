@@ -51,7 +51,8 @@ Homepage: http://github.com/openstack/os-brick
 
 Package: python-os-brick
 Architecture: all
-Depends: python-babel,
+Depends: os-brick-common (= ${binary:Version}),
+         python-babel,
          python-eventlet (>= 0.17.4),
          python-oslo.concurrency (>= 2.3.0),
          python-oslo.i18n (>= 1.5.0),
@@ -75,7 +76,8 @@ Description: Library for managing local volume attaches - Python 2.x
 
 Package: python3-os-brick
 Architecture: all
-Depends: python3-babel,
+Depends: os-brick-common (= ${binary:Version}),
+         python3-babel,
          python3-eventlet (>= 0.17.4),
          python3-oslo.concurrency (>= 2.3.0),
          python3-oslo.i18n (>= 1.5.0),
@@ -96,6 +98,18 @@ Description: Library for managing local volume attaches - Python 3.x
  transport protocols and removal of volumes from a host.
  .
  This package contains the Python 3.x module.
+
+Package: os-brick-common
+Architecture: all
+Depends: ${misc:Depends}
+Description: Library for managing local volume attaches - common files
+ OpenStack Cinder brick library for managing local volume attaches.
+ .
+ Features discovery of volumes being attached to a host for many
+ transport protocols and removal of volumes from a host.
+ .
+ This package contains common files needed by either the Python 2 or 3 module
+ of os-brick.
 
 Package: python-os-brick-doc
 Section: doc

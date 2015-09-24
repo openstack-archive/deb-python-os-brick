@@ -2,6 +2,8 @@ python-os-brick (0.5.0-1) experimental; urgency=medium
 
   * New upstream release.
   * Fixed (build-)depends for this release.
+  * Added a new os-brick-common package, which is needed to hold the rootwrap
+    configuration file for both python{3,}-os-brick packages.
 
  -- Thomas Goirand <zigo@debian.org>  Thu, 24 Sep 2015 16:07:58 +0200
 

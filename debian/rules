@@ -21,6 +21,8 @@ override_dh_install:
 			--root $(CURDIR)/debian/python3-os-brick; \
 	done
 	rm -rf $(CURDIR)/debian/python*-os-brick/usr/lib/python*/dist-packages/*.pth
+	rm -rf $(CURDIR)/debian/python*-os-brick/usr/etc
+	install -D -m 0644 etc/os-brick/rootwrap.d/os-brick.filters $(CURDIR)/debian/os-brick-common/etc/os-brick/rootwrap.d/os-brick.filters
 
 # TODO(jamespage): Re-enable py3 tests once fixed upstream.
 #				   https://review.openstack.org/#/c/194216/
