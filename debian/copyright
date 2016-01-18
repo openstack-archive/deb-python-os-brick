@@ -2,16 +2,17 @@ Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: os-brick
 Source: http://github.com/openstack/os-brick
 
-Files: debian/*
-Copyright: 2015 Canonical Ltd
-License: Apache-2
-
 Files: *
 Copyright: 2011-2015, OpenStack Foundation,
            2010 United States Government,
            2011 Justin Santa Barbara,
            2013-2015 Hewlett-Packard Development Company, L.P,
            2014 IBM Corp
+License: Apache-2
+
+Files: debian/*
+Copyright: (c) 2015, Canonical Ltd
+           (c) 2015-2016, Thomas Goirand <zigo@debian.org>
 License: Apache-2
 
 License: Apache-2
