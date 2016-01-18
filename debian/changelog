@@ -1,3 +1,10 @@
+python-os-brick (0.7.0-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Fixed (build-)depends for this release.
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 18 Jan 2016 12:22:45 +0000
+
 python-os-brick (0.5.0-2) unstable; urgency=medium
 
   [ James Page ]
