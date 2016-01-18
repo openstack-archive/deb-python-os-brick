@@ -40,7 +40,8 @@ class RemoteFsClient(object):
             'cifs': 'smbfs',
             'glusterfs': 'glusterfs',
             'vzstorage': 'vzstorage',
-            'scality': 'scality_sofs'
+            'scality': 'scality_sofs',
+            'quobyte': 'quobyte'
         }
 
         if mount_type not in mount_type_to_option_prefix:
@@ -64,6 +65,9 @@ class RemoteFsClient(object):
 
     def set_execute(self, execute):
         self._execute = execute
+
+    def get_mount_base(self):
+        return self._mount_base
 
     def _get_hash_str(self, base_str):
         """Return a string that represents hash of base_str

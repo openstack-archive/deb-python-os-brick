@@ -30,6 +30,7 @@ import re
 import requests
 import socket
 import sys
+import tempfile
 import time
 
 from oslo_concurrency import lockutils
@@ -66,6 +67,7 @@ ISCSI = "ISCSI"
 ISER = "ISER"
 FIBRE_CHANNEL = "FIBRE_CHANNEL"
 AOE = "AOE"
+DRBD = "DRBD"
 NFS = "NFS"
 GLUSTERFS = "GLUSTERFS"
 LOCAL = "LOCAL"
@@ -74,6 +76,7 @@ HGST = "HGST"
 RBD = "RBD"
 SCALEIO = "SCALEIO"
 SCALITY = "SCALITY"
+QUOBYTE = "QUOBYTE"
 
 
 def _check_multipathd_running(root_helper, enforce_multipath):
@@ -101,6 +104,18 @@ def get_connector_properties(root_helper, my_ip, multipath, enforce_multipath,
     For the compatibility reason, even if multipath=False is specified,
     some cinder storage drivers may export the target for multipath, which
     can be found via sendtargets discovery.
+
+    :param root_helper: The command prefix for executing as root.
+    :type root_helper: str
+    :param my_ip: The IP address of the local host.
+    :type my_ip: str
+    :param multipath: Enable multipath?
+    :type multipath: bool
+    :param enforce_multipath: Should we enforce that the multipath daemon is
+                              running?  If the daemon isn't running then the
+                              return dict will have multipath as False.
+    :type enforce_multipath: bool
+    :returns: dict containing all of the collected initiator values.
     """
 
     iscsi = ISCSIConnector(root_helper=root_helper)
@@ -194,13 +209,18 @@ class InitiatorConnector(executor.Executor):
                                 execute=execute,
                                 device_scan_attempts=device_scan_attempts,
                                 *args, **kwargs)
-        elif protocol in (NFS, GLUSTERFS, SCALITY):
+        elif protocol in (NFS, GLUSTERFS, SCALITY, QUOBYTE):
             return RemoteFsConnector(mount_type=protocol.lower(),
                                      root_helper=root_helper,
                                      driver=driver,
                                      execute=execute,
                                      device_scan_attempts=device_scan_attempts,
                                      *args, **kwargs)
+        elif protocol == DRBD:
+            return DRBDConnector(root_helper=root_helper,
+                                 driver=driver,
+                                 execute=execute,
+                                 *args, **kwargs)
         elif protocol == LOCAL:
             return LocalConnector(root_helper=root_helper,
                                   driver=driver,
@@ -241,6 +261,14 @@ class InitiatorConnector(executor.Executor):
             raise ValueError(msg)
 
     def check_valid_device(self, path, run_as_root=True):
+        """Test to see if the device path is a real device.
+
+        :param path: The file system path for the device.
+        :type path: str
+        :param run_as_root: run the tests as root user?
+        :type run_as_root: bool
+        :returns: bool
+        """
         cmd = ('dd', 'if=%(path)s' % {"path": path},
                'of=/dev/null', 'count=1')
         out, info = None, None
@@ -264,6 +292,49 @@ class InitiatorConnector(executor.Executor):
 
         The connection_properties describes the information needed by
         the specific protocol to use to make the connection.
+
+        The connection_properties is a dictionary that describes the target
+        volume.  It varies slightly by protocol type (iscsi, fibre_channel),
+        but the structure is usually the same.
+
+
+        An example for iSCSI:
+
+        {'driver_volume_type': 'iscsi',
+         'data': {
+             'target_luns': [0, 2],
+             'target_iqns': ['iqn.2000-05.com.3pardata:20810002ac00383d',
+                             'iqn.2000-05.com.3pardata:21810002ac00383d'],
+             'target_discovered': True,
+             'encrypted': False,
+             'qos_specs': None,
+             'target_portals': ['10.52.1.11:3260', '10.52.2.11:3260'],
+             'access_mode': 'rw',
+        }}
+
+        An example for fibre_channel:
+
+        {'driver_volume_type': 'fibre_channel',
+         'data': {
+            'initiator_target_map': {'100010604b010459': ['21230002AC00383D'],
+                                     '100010604b01045d': ['21230002AC00383D']
+                                    },
+            'target_discovered': True,
+            'encrypted': False,
+            'qos_specs': None,
+            'target_lun': 1,
+            'access_mode': 'rw',
+            'target_wwn': [
+                '20210002AC00383D',
+                '20220002AC00383D',
+                ],
+         }}
+
+
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+        :type connection_properties: dict
+        :returns: dict
         """
         pass
 
@@ -273,8 +344,66 @@ class InitiatorConnector(executor.Executor):
 
         The connection_properties are the same as from connect_volume.
         The device_info is returned from connect_volume.
+
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+        :type connection_properties: dict
+        :param device_info: historical difference, but same as connection_props
+        :type device_info: dict
         """
         pass
+
+    @abc.abstractmethod
+    def get_volume_paths(self, connection_properties):
+        """Return the list of existing paths for a volume.
+
+        The job of this method is to find out what paths in
+        the system are associated with a volume as described
+        by the connection_properties.
+
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+        :type connection_properties: dict
+        """
+        pass
+
+    @abc.abstractmethod
+    def get_search_path(self):
+        """Return the directory where a Connector looks for volumes.
+
+        Some Connectors need the information in the
+        connection_properties to determine the search path.
+        """
+        pass
+
+    def get_all_available_volumes(self, connection_properties=None):
+        """Return all volumes that exist in the search directory.
+
+        At connect_volume time, a Connector looks in a specific
+        directory to discover a volume's paths showing up.
+        This method's job is to return all paths in the directory
+        that connect_volume uses to find a volume.
+
+        This method is used in coordination with get_volume_paths()
+        to verify that volumes have gone away after disconnect_volume
+        has been called.
+
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+        :type connection_properties: dict
+        """
+        path = self.get_search_path()
+        if path:
+            # now find all entries in the search path
+            file_list = []
+            if os.path.isdir(path):
+                files = os.listdir(path)
+                for entry in files:
+                    file_list.append(path + entry)
+
+            return file_list
+        else:
+            return []
 
 
 class FakeConnector(InitiatorConnector):
@@ -288,6 +417,16 @@ class FakeConnector(InitiatorConnector):
 
     def disconnect_volume(self, connection_properties, device_info):
         pass
+
+    def get_volume_paths(self, connection_properties):
+        return [self.fake_path]
+
+    def get_search_path(self):
+        return '/dev/disk/by-path'
+
+    def get_all_available_volumes(self, connection_properties=None):
+        return ['/dev/disk/by-path/fake-volume-1',
+                '/dev/disk/by-path/fake-volume-X']
 
 
 class ISCSIConnector(InitiatorConnector):
@@ -308,6 +447,171 @@ class ISCSIConnector(InitiatorConnector):
         self.use_multipath = use_multipath
         self.transport = self._validate_iface_transport(transport)
 
+    def get_search_path(self):
+        """Where do we look for iSCSI based volumes."""
+        return '/dev/disk/by-path'
+
+    def get_volume_paths(self, connection_properties):
+        """Get the list of existing paths for a volume.
+
+        This method's job is to simply report what might/should
+        already exist for a volume.  We aren't trying to attach/discover
+        a new volume, but find any existing paths for a volume we
+        think is already attached.
+
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+        :type connection_properties: dict
+        """
+        volume_paths = []
+
+        # if there are no sessions, then target_portal won't exist
+        if (('target_portal' not in connection_properties) and
+           ('target_portals' not in connection_properties)):
+            return volume_paths
+
+        # Don't try and connect to the portals in the list as
+        # this can create empty iSCSI sessions to hosts if they
+        # didn't exist previously.
+        # We are simply trying to find any existing volumes with
+        # already connected sessions.
+        host_devices, target_props = self._get_potential_volume_paths(
+            connection_properties,
+            connect_to_portal=False,
+            use_rescan=False)
+
+        for path in host_devices:
+            if os.path.exists(path):
+                volume_paths.append(path)
+
+        return volume_paths
+
+    def _get_iscsi_sessions(self):
+        out, err = self._run_iscsi_session()
+
+        iscsi_sessions = []
+
+        if err:
+            LOG.warning(_LW("Couldn't find iscsi sessions because "
+                        "iscsiadm err: %s"),
+                        err)
+        else:
+            # parse the output from iscsiadm
+            # lines are in the format of
+            # tcp: [1] 192.168.121.250:3260,1 iqn.2010-10.org.openstack:volume-
+            lines = out.split('\n')
+            for line in lines:
+                if line:
+                    entries = line.split()
+                    portal = entries[2].split(',')
+                    iscsi_sessions.append(portal[0])
+
+        return iscsi_sessions
+
+    def _get_potential_volume_paths(self, connection_properties,
+                                    connect_to_portal=True,
+                                    use_rescan=True):
+        """Build a list of potential volume paths that exist.
+
+        Given a list of target_portals in the connection_properties,
+        a list of paths might exist on the system during discovery.
+        This method's job is to build that list of potential paths
+        for a volume that might show up.
+
+        This is used during connect_volume time, in which case we want
+        to connect to the iSCSI target portal.
+
+        During get_volume_paths time, we are looking to
+        find a list of existing volume paths for the connection_properties.
+        In this case, we don't want to connect to the portal.  If we
+        blindly try and connect to a portal, it could create a new iSCSI
+        session that didn't exist previously, and then leave it stale.
+
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+        :type connection_properties: dict
+        :param connect_to_portal: Do we want to try a new connection to the
+                                  target portal(s)?  Set this to False if you
+                                  want to search for existing volumes, not
+                                  discover new volumes.
+        :param connect_to_portal: bool
+        :param use_rescan: Issue iSCSI rescan during discovery?
+        :type use_rescan: bool
+        :returns: dict
+        """
+
+        target_props = None
+        connected_to_portal = False
+        if self.use_multipath:
+            LOG.info(_LI("Multipath discovery for iSCSI enabled"))
+            # Multipath installed, discovering other targets if available
+            try:
+                ips_iqns = self._discover_iscsi_portals(connection_properties)
+            except Exception:
+                raise exception.TargetPortalNotFound(
+                    target_portal=connection_properties['target_portal'])
+
+            if not connection_properties.get('target_iqns'):
+                # There are two types of iSCSI multipath devices. One which
+                # shares the same iqn between multiple portals, and the other
+                # which use different iqns on different portals.
+                # Try to identify the type by checking the iscsiadm output
+                # if the iqn is used by multiple portals. If it is, it's
+                # the former, so use the supplied iqn. Otherwise, it's the
+                # latter, so try the ip,iqn combinations to find the targets
+                # which constitutes the multipath device.
+                main_iqn = connection_properties['target_iqn']
+                all_portals = set([ip for ip, iqn in ips_iqns])
+                match_portals = set([ip for ip, iqn in ips_iqns
+                                     if iqn == main_iqn])
+                if len(all_portals) == len(match_portals):
+                    ips_iqns = zip(all_portals, [main_iqn] * len(all_portals))
+
+            for ip, iqn in ips_iqns:
+                props = copy.deepcopy(connection_properties)
+                props['target_portal'] = ip
+                props['target_iqn'] = iqn
+                if connect_to_portal:
+                    if self._connect_to_iscsi_portal(props):
+                        connected_to_portal = True
+
+            if use_rescan:
+                self._rescan_iscsi()
+            host_devices = self._get_device_path(connection_properties)
+        else:
+            LOG.info(_LI("Multipath discovery for iSCSI not enabled."))
+            iscsi_sessions = []
+            if not connect_to_portal:
+                iscsi_sessions = self._get_iscsi_sessions()
+
+            host_devices = []
+            target_props = connection_properties
+            for props in self._iterate_all_targets(connection_properties):
+                if connect_to_portal:
+                    if self._connect_to_iscsi_portal(props):
+                        target_props = props
+                        connected_to_portal = True
+                        host_devices = self._get_device_path(props)
+                        break
+                    else:
+                        LOG.warning(_LW(
+                            'Failed to connect to iSCSI portal %(portal)s.'),
+                            {'portal': props['target_portal']})
+                else:
+                    # If we aren't trying to connect to the portal, we
+                    # want to find ALL possible paths from all of the
+                    # alternate portals
+                    if props['target_portal'] in iscsi_sessions:
+                        paths = self._get_device_path(props)
+                        host_devices = list(set(paths + host_devices))
+
+        if connect_to_portal and not connected_to_portal:
+            msg = _("Could not login to any iSCSI portal.")
+            LOG.error(msg)
+            raise exception.FailedISCSITargetPortalLogin(message=msg)
+
+        return host_devices, target_props
+
     def set_execute(self, execute):
         super(ISCSIConnector, self).set_execute(execute)
         self._linuxscsi.set_execute(execute)
@@ -321,6 +625,10 @@ class ISCSIConnector(InitiatorConnector):
         unlike default(iscsi_tcp)/iser, this is not one and the same for
         offloaded transports, where the default format is
         transport_name.hwaddress
+
+        :param transport_iface: The iscsi transport type.
+        :type transport_iface: str
+        :returns: str
         """
         # Note that default(iscsi_tcp) and iser do not require a separate
         # iface file, just the transport is enough and do not need to be
@@ -342,9 +650,9 @@ class ISCSIConnector(InitiatorConnector):
                 if data[2] in self.supported_transports:
                     return transport_iface
 
-        LOG.warn(_LW("No useable transport found for iscsi iface %s. "
-                     "Falling back to default transport."),
-                 transport_iface)
+        LOG.warning(_LW("No useable transport found for iscsi iface %s. "
+                        "Falling back to default transport."),
+                    transport_iface)
         return 'default'
 
     def _get_transport(self):
@@ -437,6 +745,11 @@ class ISCSIConnector(InitiatorConnector):
     def connect_volume(self, connection_properties):
         """Attach the volume to instance_name.
 
+        :param connection_properties: The valid dictionary that describes all
+                                      of the target volume attributes.
+        :type connection_properties: dict
+        :returns: dict
+
         connection_properties for iSCSI must include:
         target_portal(s) - ip and optional port
         target_iqn(s) - iSCSI Qualified Name
@@ -446,50 +759,8 @@ class ISCSIConnector(InitiatorConnector):
 
         device_info = {'type': 'block'}
 
-        if self.use_multipath:
-            # Multipath installed, discovering other targets if available
-            try:
-                ips_iqns = self._discover_iscsi_portals(connection_properties)
-            except Exception:
-                raise exception.TargetPortalNotFound(
-                    target_portal=connection_properties['target_portal'])
-
-            if not connection_properties.get('target_iqns'):
-                # There are two types of iSCSI multipath devices. One which
-                # shares the same iqn between multiple portals, and the other
-                # which use different iqns on different portals.
-                # Try to identify the type by checking the iscsiadm output
-                # if the iqn is used by multiple portals. If it is, it's
-                # the former, so use the supplied iqn. Otherwise, it's the
-                # latter, so try the ip,iqn combinations to find the targets
-                # which constitutes the multipath device.
-                main_iqn = connection_properties['target_iqn']
-                all_portals = set([ip for ip, iqn in ips_iqns])
-                match_portals = set([ip for ip, iqn in ips_iqns
-                                     if iqn == main_iqn])
-                if len(all_portals) == len(match_portals):
-                    ips_iqns = zip(all_portals, [main_iqn] * len(all_portals))
-
-            for ip, iqn in ips_iqns:
-                props = copy.deepcopy(connection_properties)
-                props['target_portal'] = ip
-                props['target_iqn'] = iqn
-                self._connect_to_iscsi_portal(props)
-
-            self._rescan_iscsi()
-            host_devices = self._get_device_path(connection_properties)
-        else:
-            target_props = connection_properties
-            for props in self._iterate_all_targets(connection_properties):
-                if self._connect_to_iscsi_portal(props):
-                    target_props = props
-                    break
-                else:
-                    LOG.warning(_LW(
-                        'Failed to connect to iSCSI portal %(portal)s.'),
-                        {'portal': props['target_portal']})
-
-            host_devices = self._get_device_path(target_props)
+        host_devices, target_props = self._get_potential_volume_paths(
+            connection_properties)
 
         # The /dev/disk/by-path/... node is not always present immediately
         # TODO(justinsb): This retry-with-delay is a pattern, move to utils?
@@ -532,16 +803,28 @@ class ISCSIConnector(InitiatorConnector):
             multipath_device = self._get_multipath_device_name(host_device)
             if multipath_device is not None:
                 host_device = multipath_device
-                LOG.debug("Unable to find multipath device name for "
-                          "volume. Only using path %(device)s "
+                LOG.debug("Found multipath device name for "
+                          "volume. Using path %(device)s "
                           "for volume.", {'device': host_device})
 
+        # find out the WWN of the device
+        device_wwn = self._linuxscsi.get_scsi_wwn(host_device)
+        LOG.debug("Device WWN = '%(wwn)s'", {'wwn': device_wwn})
+        device_info['scsi_wwn'] = device_wwn
         device_info['path'] = host_device
+
+        LOG.debug("connect_volume returning %s", device_info)
         return device_info
 
     @synchronized('connect_volume')
     def disconnect_volume(self, connection_properties, device_info):
         """Detach the volume from instance_name.
+
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+        :type connection_properties: dict
+        :param device_info: historical difference, but same as connection_props
+        :type device_info: dict
 
         connection_properties for iSCSI must include:
         target_portal(s) - IP and optional port
@@ -610,16 +893,27 @@ class ISCSIConnector(InitiatorConnector):
         if not devices:
             self._disconnect_from_iscsi_portal(connection_properties)
 
+    def _munge_portal(self, target):
+        """Remove brackets from portal.
+
+        In case IPv6 address was used the udev path should not contain any
+        brackets. Udev code specifically forbids that.
+        """
+        portal, iqn, lun = target
+        return (portal.replace('[', '').replace(']', ''), iqn, lun)
+
     def _get_device_path(self, connection_properties):
         if self._get_transport() == "default":
-            return ["/dev/disk/by-path/ip-%s-iscsi-%s-lun-%s" % x for x in
+            return ["/dev/disk/by-path/ip-%s-iscsi-%s-lun-%s" %
+                    self._munge_portal(x) for x in
                     self._get_all_targets(connection_properties)]
         else:
             # we are looking for paths in the format :
             # /dev/disk/by-path/pci-XXXX:XX:XX.X-ip-PORTAL:PORT-iscsi-IQN-lun-LUN_ID
             device_list = []
             for x in self._get_all_targets(connection_properties):
-                look_for_device = glob.glob('/dev/disk/by-path/*ip-%s-iscsi-%s-lun-%s' % x)  # noqa
+                look_for_device = glob.glob('/dev/disk/by-path/*ip-%s-iscsi-%s-lun-%s'  # noqa
+                                            % self._munge_portal(x))
                 if look_for_device:
                     device_list.extend(look_for_device)
             return device_list
@@ -744,6 +1038,8 @@ class ISCSIConnector(InitiatorConnector):
         #             target exists, and if we get 255 (Not Found), then
         #             we run --op new. This will also happen if another
         #             volume is using the same target.
+        LOG.info(_LI("Trying to connect to iSCSI portal %(portal)s"),
+                 {"portal": connection_properties['target_portal']})
         try:
             self._run_iscsiadm(connection_properties, ())
         except putils.ProcessExecutionError as exc:
@@ -874,8 +1170,15 @@ class ISCSIConnector(InitiatorConnector):
                 mpath_map['/dev/' + m[1].split(" ")[0]] = mpath_dev
 
         if mpath_line and not mpath_map:
-            LOG.warn(_LW("Failed to parse the output of multipath -ll."))
+            LOG.warning(_LW("Failed to parse the output of multipath -ll."))
         return mpath_map
+
+    def _run_iscsi_session(self):
+        (out, err) = self._run_iscsiadm_bare(('-m', 'session'),
+                                             check_exit_code=[0, 1, 21, 255])
+        LOG.debug("iscsi session list stdout=%(out)s stderr=%(err)s",
+                  {'out': out, 'err': err})
+        return (out, err)
 
     def _run_iscsiadm_bare(self, iscsi_command, **kwargs):
         check_exit_code = kwargs.pop('check_exit_code', 0)
@@ -932,6 +1235,10 @@ class FibreChannelConnector(InitiatorConnector):
         self._linuxscsi.set_execute(execute)
         self._linuxfc.set_execute(execute)
 
+    def get_search_path(self):
+        """Where do we look for FC based volumes."""
+        return '/dev/disk/by-path'
+
     def _get_possible_volume_paths(self, connection_properties, hbas):
         ports = connection_properties['target_wwn']
         possible_devs = self._get_possible_devices(hbas, ports)
@@ -940,15 +1247,15 @@ class FibreChannelConnector(InitiatorConnector):
         host_paths = self._get_host_devices(possible_devs, lun)
         return host_paths
 
-    def _get_volume_paths(self, connection_properties):
-        """Get a list of existing paths for a volume on the system."""
+    def get_volume_paths(self, connection_properties):
         volume_paths = []
         # first fetch all of the potential paths that might exist
-        # and then filter those by what's actually on the system.
+        # how the FC fabric is zoned may alter the actual list
+        # that shows up on the system.  So, we verify each path.
         hbas = self._linuxfc.get_fc_hbas_info()
-        host_paths = self._get_possible_volume_paths(connection_properties,
-                                                     hbas)
-        for path in host_paths:
+        device_paths = self._get_possible_volume_paths(
+            connection_properties, hbas)
+        for path in device_paths:
             if os.path.exists(path):
                 volume_paths.append(path)
 
@@ -958,6 +1265,11 @@ class FibreChannelConnector(InitiatorConnector):
     def connect_volume(self, connection_properties):
         """Attach the volume to instance_name.
 
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+        :type connection_properties: dict
+        :returns: dict
+
         connection_properties for Fibre Channel must include:
         target_wwn - World Wide Name
         target_lun - LUN id of the volume
@@ -966,8 +1278,8 @@ class FibreChannelConnector(InitiatorConnector):
         device_info = {'type': 'block'}
 
         hbas = self._linuxfc.get_fc_hbas_info()
-        host_devices = self._get_possible_volume_paths(connection_properties,
-                                                       hbas)
+        host_devices = self._get_possible_volume_paths(
+            connection_properties, hbas)
 
         if len(host_devices) == 0:
             # this is empty because we don't have any FC HBAs
@@ -1017,6 +1329,7 @@ class FibreChannelConnector(InitiatorConnector):
         # find out the WWN of the device
         device_wwn = self._linuxscsi.get_scsi_wwn(self.host_device)
         LOG.debug("Device WWN = '%(wwn)s'", {'wwn': device_wwn})
+        device_info['scsi_wwn'] = device_wwn
 
         # see if the new drive is part of a multipath
         # device.  If so, we'll use the multipath device.
@@ -1043,10 +1356,21 @@ class FibreChannelConnector(InitiatorConnector):
                     LOG.debug("Unable to find multipath device name for "
                               "volume. Using path %(device)s for volume.",
                               {'device': self.host_device})
+
+            if connection_properties.get('access_mode', '') != 'ro':
+                try:
+                    # Sometimes the multipath devices will show up as read only
+                    # initially and need additional time/rescans to get to RW.
+                    self._linuxscsi.wait_for_rw(device_wwn, device_path)
+                except exception.BlockDeviceReadOnly:
+                    LOG.warning(_LW('Block device %s is still read-only. '
+                                    'Continuing anyway.'), device_path)
+
         else:
             device_path = self.host_device
 
         device_info['path'] = device_path
+        LOG.debug("connect_volume returning %s", device_info)
         return device_info
 
     def _get_host_devices(self, possible_devs, lun):
@@ -1060,7 +1384,7 @@ class FibreChannelConnector(InitiatorConnector):
         return host_devices
 
     def _get_possible_devices(self, hbas, wwnports):
-        """Compute the possible valid fibre channel device options.
+        """Compute the possible fibre channel device options.
 
         :param hbas: available hba devices.
         :param wwnports: possible wwn addresses. Can either be string
@@ -1097,13 +1421,19 @@ class FibreChannelConnector(InitiatorConnector):
     def disconnect_volume(self, connection_properties, device_info):
         """Detach the volume from instance_name.
 
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+        :type connection_properties: dict
+        :param device_info: historical difference, but same as connection_props
+        :type device_info: dict
+
         connection_properties for Fibre Channel must include:
         target_wwn - World Wide Name
         target_lun - LUN id of the volume
         """
 
         devices = []
-        volume_paths = self._get_volume_paths(connection_properties)
+        volume_paths = self.get_volume_paths(connection_properties)
         wwn = None
         for path in volume_paths:
             real_path = self._linuxscsi.get_name_from_path(path)
@@ -1130,24 +1460,18 @@ class FibreChannelConnector(InitiatorConnector):
 
     def _get_pci_num(self, hba):
         # NOTE(walter-boring)
-        # device path is in format of
+        # device path is in format of (FC and FCoE) :
         # /sys/devices/pci0000:00/0000:00:03.0/0000:05:00.3/host2/fc_host/host2
-        # sometimes an extra entry exists before the host2 value
-        # we always want the value prior to the host2 value
-        pci_num = None
+        # /sys/devices/pci0000:20/0000:20:03.0/0000:21:00.2/net/ens2f2/ctlr_2
+        # /host3/fc_host/host3
+        # we always want the value prior to the host or net value
         if hba is not None:
             if "device_path" in hba:
-                index = 0
                 device_path = hba['device_path'].split('/')
-                for value in device_path:
-                    if value.startswith('host'):
-                        break
-                    index = index + 1
-
-                if index > 0:
-                    pci_num = device_path[index - 1]
-
-        return pci_num
+                for index, value in enumerate(device_path):
+                    if value.startswith('net') or value.startswith('host'):
+                        return device_path[index - 1]
+        return None
 
 
 class FibreChannelConnectorS390X(FibreChannelConnector):
@@ -1226,17 +1550,35 @@ class AoEConnector(InitiatorConnector):
             device_scan_attempts=device_scan_attempts,
             *args, **kwargs)
 
+    def get_search_path(self):
+        return '/dev/etherd'
+
+    def get_volume_paths(self, connection_properties):
+        aoe_device, aoe_path = self._get_aoe_info(connection_properties)
+        volume_paths = []
+        if os.path.exists(aoe_path):
+            volume_paths.append(aoe_path)
+
+        return volume_paths
+
     def _get_aoe_info(self, connection_properties):
         shelf = connection_properties['target_shelf']
         lun = connection_properties['target_lun']
         aoe_device = 'e%(shelf)s.%(lun)s' % {'shelf': shelf,
                                              'lun': lun}
-        aoe_path = '/dev/etherd/%s' % (aoe_device)
+        path = self.get_search_path()
+        aoe_path = '%(path)s/%(device)s' % {'path': path,
+                                            'device': aoe_device}
         return aoe_device, aoe_path
 
     @lockutils.synchronized('aoe_control', 'aoe-')
     def connect_volume(self, connection_properties):
         """Discover and attach the volume.
+
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+        :type connection_properties: dict
+        :returns: dict
 
         connection_properties for AoE must include:
         target_shelf - shelf id of volume
@@ -1289,6 +1631,12 @@ class AoEConnector(InitiatorConnector):
     def disconnect_volume(self, connection_properties, device_info):
         """Detach and flush the volume.
 
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+        :type connection_properties: dict
+        :param device_info: historical difference, but same as connection_props
+        :type device_info: dict
+
         connection_properties for AoE must include:
         target_shelf - shelf id of volume
         target_lun - lun id of volume
@@ -1339,7 +1687,7 @@ class RemoteFsConnector(InitiatorConnector):
         if conn:
             mount_point_base = conn.get('mount_point_base')
             mount_type_lower = mount_type.lower()
-            if mount_type_lower in ('nfs', 'glusterfs', 'scality'):
+            if mount_type_lower in ('nfs', 'glusterfs', 'scality', 'quobyte'):
                 kwargs[mount_type_lower + '_mount_point_base'] = (
                     kwargs.get(mount_type_lower + '_mount_point_base') or
                     mount_point_base)
@@ -1359,17 +1707,10 @@ class RemoteFsConnector(InitiatorConnector):
         super(RemoteFsConnector, self).set_execute(execute)
         self._remotefsclient.set_execute(execute)
 
-    def connect_volume(self, connection_properties):
-        """Ensure that the filesystem containing the volume is mounted.
+    def get_search_path(self):
+        return self._remotefsclient.get_mount_base()
 
-        connection_properties must include:
-        export - remote filesystem device (e.g. '172.18.194.100:/var/nfs')
-        name - file name within the filesystem
-
-        connection_properties may optionally include:
-        options - options to pass to mount
-        """
-
+    def _get_volume_path(self, connection_properties):
         mnt_flags = []
         if connection_properties.get('options'):
             mnt_flags = connection_properties['options'].split()
@@ -1377,13 +1718,40 @@ class RemoteFsConnector(InitiatorConnector):
         nfs_share = connection_properties['export']
         self._remotefsclient.mount(nfs_share, mnt_flags)
         mount_point = self._remotefsclient.get_mount_point(nfs_share)
-
         path = mount_point + '/' + connection_properties['name']
+        return path
 
+    def get_volume_paths(self, connection_properties):
+        path = self._get_volume_path(connection_properties)
+        return [path]
+
+    def connect_volume(self, connection_properties):
+        """Ensure that the filesystem containing the volume is mounted.
+
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+             connection_properties must include:
+             export - remote filesystem device (e.g. '172.18.194.100:/var/nfs')
+             name - file name within the filesystem
+        :type connection_properties: dict
+        :returns: dict
+
+
+        connection_properties may optionally include:
+        options - options to pass to mount
+        """
+        path = self._get_volume_path(connection_properties)
         return {'path': path}
 
     def disconnect_volume(self, connection_properties, device_info):
-        """No need to do anything to disconnect a volume in a filesystem."""
+        """No need to do anything to disconnect a volume in a filesystem.
+
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+        :type connection_properties: dict
+        :param device_info: historical difference, but same as connection_props
+        :type device_info: dict
+        """
 
 
 class RBDConnector(InitiatorConnector):
@@ -1400,8 +1768,21 @@ class RBDConnector(InitiatorConnector):
                                            device_scan_attempts,
                                            *args, **kwargs)
 
-    def connect_volume(self, connection_properties):
-        """Connect to a volume."""
+    def get_volume_paths(self, connection_properties):
+        # TODO(walter-boring): don't know where the connector
+        # looks for RBD volumes.
+        return []
+
+    def get_search_path(self):
+        # TODO(walter-boring): don't know where the connector
+        # looks for RBD volumes.
+        return None
+
+    def get_all_available_volumes(self, connection_properties=None):
+        # TODO(walter-boring): not sure what to return here for RBD
+        return []
+
+    def _get_rbd_handle(self, connection_properties):
         try:
             user = connection_properties['auth_username']
             pool, volume = connection_properties['name'].split('/')
@@ -1412,14 +1793,33 @@ class RBDConnector(InitiatorConnector):
         rbd_client = linuxrbd.RBDClient(user, pool)
         rbd_volume = linuxrbd.RBDVolume(rbd_client, volume)
         rbd_handle = linuxrbd.RBDVolumeIOWrapper(rbd_volume)
+        return rbd_handle
 
+    def connect_volume(self, connection_properties):
+        """Connect to a volume.
+
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+        :type connection_properties: dict
+        :returns: dict
+        """
+
+        rbd_handle = self._get_rbd_handle(connection_properties)
         return {'path': rbd_handle}
 
     def disconnect_volume(self, connection_properties, device_info):
-        """Disconnect a volume."""
-        rbd_handle = device_info.get('path', None)
-        if rbd_handle is not None:
-            rbd_handle.close()
+        """Disconnect a volume.
+
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+        :type connection_properties: dict
+        :param device_info: historical difference, but same as connection_props
+        :type device_info: dict
+        """
+        if device_info:
+            rbd_handle = device_info.get('path', None)
+            if rbd_handle is not None:
+                rbd_handle.close()
 
     def check_valid_device(self, path, run_as_root=True):
         """Verify an existing RBD handle is connected and valid."""
@@ -1450,11 +1850,26 @@ class LocalConnector(InitiatorConnector):
         super(LocalConnector, self).__init__(root_helper, driver=driver,
                                              execute=execute, *args, **kwargs)
 
+    def get_volume_paths(self, connection_properties):
+        path = connection_properties['device_path']
+        return [path]
+
+    def get_search_path(self):
+        return None
+
+    def get_all_available_volumes(self, connection_properties=None):
+        # TODO(walter-boring): not sure what to return here.
+        return []
+
     def connect_volume(self, connection_properties):
         """Connect to a volume.
 
-        connection_properties must include:
-        device_path - path to the volume to be connected
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+               connection_properties must include:
+               device_path - path to the volume to be connected
+        :type connection_properties: dict
+        :returns: dict
         """
         if 'device_path' not in connection_properties:
             msg = (_("Invalid connection_properties specified "
@@ -1466,8 +1881,92 @@ class LocalConnector(InitiatorConnector):
         return device_info
 
     def disconnect_volume(self, connection_properties, device_info):
-        """Disconnect a volume from the local host."""
+        """Disconnect a volume from the local host.
+
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+        :type connection_properties: dict
+        :param device_info: historical difference, but same as connection_props
+        :type device_info: dict
+        """
         pass
+
+
+class DRBDConnector(InitiatorConnector):
+    """"Connector class to attach/detach DRBD resources."""
+
+    def __init__(self, root_helper, driver=None,
+                 execute=putils.execute, *args, **kwargs):
+
+        super(DRBDConnector, self).__init__(root_helper, driver=driver,
+                                            execute=execute, *args, **kwargs)
+
+        self._execute = execute
+        self._root_helper = root_helper
+
+    def check_valid_device(self, path, run_as_root=True):
+        """Verify an existing volume."""
+        # TODO(linbit): check via drbdsetup first, to avoid blocking/hanging
+        # in case of network problems?
+
+        return super(DRBDConnector, self).check_valid_device(path, run_as_root)
+
+    def get_all_available_volumes(self, connection_properties=None):
+
+        base = "/dev/"
+        blkdev_list = []
+
+        for e in os.listdir(base):
+            path = base + e
+            if os.path.isblk(path):
+                blkdev_list.append(path)
+
+        return blkdev_list
+
+    def _drbdadm_command(self, cmd, data_dict, sh_secret):
+        # TODO(linbit): Write that resource file to a permanent location?
+        tmp = tempfile.NamedTemporaryFile(suffix="res", delete=False, mode="w")
+        try:
+            kv = {'shared-secret': sh_secret}
+            tmp.write(data_dict['config'] % kv)
+            tmp.close()
+
+            (out, err) = self._execute('drbdadm', cmd,
+                                       "-c", tmp.name,
+                                       data_dict['name'],
+                                       run_as_root=True,
+                                       root_helper=self._root_helper)
+        finally:
+            os.unlink(tmp.name)
+
+        return (out, err)
+
+    def connect_volume(self, connection_properties):
+        """Attach the volume."""
+
+        self._drbdadm_command("adjust", connection_properties,
+                              connection_properties['provider_auth'])
+
+        device_info = {
+            'type': 'block',
+            'path': connection_properties['device'],
+        }
+
+        return device_info
+
+    def disconnect_volume(self, connection_properties, device_info):
+        """Detach the volume."""
+
+        self._drbdadm_command("down", connection_properties,
+                              connection_properties['provider_auth'])
+
+    def get_volume_paths(self, connection_properties):
+        path = connection_properties['device']
+        return [path]
+
+    def get_search_path(self):
+        # TODO(linbit): is it allowed to return "/dev", or is that too broad?
+        return None
 
 
 class HuaweiStorHyperConnector(InitiatorConnector):
@@ -1495,9 +1994,43 @@ class HuaweiStorHyperConnector(InitiatorConnector):
                                                        execute=execute,
                                                        *args, **kwargs)
 
+    def get_search_path(self):
+        # TODO(walter-boring): Where is the location on the filesystem to
+        # look for Huawei volumes to show up?
+        return None
+
+    def get_all_available_volumes(self, connection_properties=None):
+        # TODO(walter-boring): what to return here for all Huawei volumes ?
+        return []
+
+    def get_volume_paths(self, connection_properties):
+        volume_path = None
+        try:
+            volume_path = self._get_volume_path(connection_properties)
+        except Exception:
+            msg = _("Couldn't find a volume.")
+            LOG.warning(msg)
+            raise exception.BrickException(message=msg)
+        return [volume_path]
+
+    def _get_volume_path(self, connection_properties):
+        out = self._query_attached_volume(
+            connection_properties['volume_id'])
+        if not out or int(out['ret_code']) != 0:
+            msg = _("Couldn't find attached volume.")
+            LOG.error(msg)
+            raise exception.BrickException(message=msg)
+        return out['dev_addr']
+
     @synchronized('connect_volume')
     def connect_volume(self, connection_properties):
-        """Connect to a volume."""
+        """Connect to a volume.
+
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+        :type connection_properties: dict
+        :returns: dict
+        """
         LOG.debug("Connect_volume connection properties: %s.",
                   connection_properties)
         out = self._attach_volume(connection_properties['volume_id'])
@@ -1507,19 +2040,28 @@ class HuaweiStorHyperConnector(InitiatorConnector):
             msg = (_("Attach volume failed, "
                    "error code is %s") % out['ret_code'])
             raise exception.BrickException(message=msg)
-        out = self._query_attached_volume(
-            connection_properties['volume_id'])
-        if not out or int(out['ret_code']) != 0:
+
+        try:
+            volume_path = self._get_volume_path(connection_properties)
+        except Exception:
             msg = _("query attached volume failed or volume not attached.")
+            LOG.error(msg)
             raise exception.BrickException(message=msg)
 
         device_info = {'type': 'block',
-                       'path': out['dev_addr']}
+                       'path': volume_path}
         return device_info
 
     @synchronized('connect_volume')
     def disconnect_volume(self, connection_properties, device_info):
-        """Disconnect a volume from the local host."""
+        """Disconnect a volume from the local host.
+
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+        :type connection_properties: dict
+        :param device_info: historical difference, but same as connection_props
+        :type device_info: dict
+        """
         LOG.debug("Disconnect_volume: %s.", connection_properties)
         out = self._detach_volume(connection_properties['volume_id'])
         if not out or int(out['ret_code']) not in (self.attached_success_code,
@@ -1643,11 +2185,27 @@ class HGSTConnector(InitiatorConnector):
             self._vgc_host = self._find_vgc_host()
         return self._vgc_host
 
+    def get_search_path(self):
+        return "/dev"
+
+    def get_volume_paths(self, connection_properties):
+        path = ("%(path)s/%(name)s" %
+                {'path': self.get_search_path(),
+                 'name': connection_properties['name']})
+        volume_path = None
+        if os.path.exists(path):
+            volume_path = path
+        return [volume_path]
+
     def connect_volume(self, connection_properties):
         """Attach a Space volume to running host.
 
-        connection_properties for HGST must include:
-        name - Name of space to attach
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+            connection_properties for HGST must include:
+            name - Name of space to attach
+        :type connection_properties: dict
+        :returns: dict
         """
         if connection_properties is None:
             msg = _("Connection properties passed in as None.")
@@ -1678,9 +2236,14 @@ class HGSTConnector(InitiatorConnector):
     def disconnect_volume(self, connection_properties, device_info):
         """Detach and flush the volume.
 
-        connection_properties for HGST must include:
-        name - Name of space to detach
-        noremovehost - Host which should never be removed
+        :param connection_properties: The dictionary that describes all
+               of the target volume attributes.
+               For HGST must include:
+               name - Name of space to detach
+               noremovehost - Host which should never be removed
+        :type connection_properties: dict
+        :param device_info: historical difference, but same as connection_props
+        :type device_info: dict
         """
         if connection_properties is None:
             msg = _("Connection properties passed in as None.")
@@ -1736,6 +2299,18 @@ class ScaleIOConnector(InitiatorConnector):
         self.iops_limit = None
         self.bandwidth_limit = None
 
+    def get_search_path(self):
+        return "/dev/disk/by-id"
+
+    def get_volume_paths(self, connection_properties):
+        self.get_config(connection_properties)
+        volume_paths = []
+        device_paths = [self._find_volume_path()]
+        for path in device_paths:
+            if os.path.exists(path):
+                volume_paths.append(path)
+        return volume_paths
+
     def _find_volume_path(self):
         LOG.info(_LI(
             "Looking for volume %(volume_id)s, maximum tries: %(tries)s"),
@@ -1743,7 +2318,7 @@ class ScaleIOConnector(InitiatorConnector):
         )
 
         # look for the volume in /dev/disk/by-id directory
-        by_id_path = "/dev/disk/by-id"
+        by_id_path = self.get_search_path()
 
         disk_filename = self._wait_for_volume_path(by_id_path)
         full_disk_name = ("%(path)s/%(filename)s" %
@@ -1934,7 +2509,13 @@ class ScaleIOConnector(InitiatorConnector):
         return device_info
 
     def connect_volume(self, connection_properties):
-        """Connect the volume."""
+        """Connect the volume.
+
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+        :type connection_properties: dict
+        :returns: dict
+        """
         device_info = self.get_config(connection_properties)
         LOG.debug(
             _(
@@ -2020,7 +2601,7 @@ class ScaleIOConnector(InitiatorConnector):
             if self.bandwidth_limit is not None:
                 params['bandwidthLimitInKbps'] = self.bandwidth_limit
             if self.iops_limit is not None:
-                params['iops_limit'] = self.iops_limit
+                params['iopsLimit'] = self.iops_limit
 
             request = (
                 "https://%(server_ip)s:%(server_port)s/api/instances/"
@@ -2056,6 +2637,14 @@ class ScaleIOConnector(InitiatorConnector):
         return device_info
 
     def disconnect_volume(self, connection_properties, device_info):
+        """Disconnect the ScaleIO volume.
+
+        :param connection_properties: The dictionary that describes all
+                                      of the target volume attributes.
+        :type connection_properties: dict
+        :param device_info: historical difference, but same as connection_props
+        :type device_info: dict
+        """
         self.get_config(connection_properties)
         self.volume_id = self._get_volume_id()
         LOG.info(_LI(

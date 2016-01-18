@@ -108,3 +108,11 @@ class ProtocolNotSupported(BrickException):
 
 class TargetPortalNotFound(BrickException):
     message = _("Unable to find target portal %(target_portal)s.")
+
+
+class FailedISCSITargetPortalLogin(BrickException):
+    message = _("Unable to login to iSCSI Target Portal")
+
+
+class BlockDeviceReadOnly(BrickException):
+    message = _("Block device %(device)s is Read-Only.")
