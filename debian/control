@@ -52,7 +52,7 @@ Build-Depends-Indep: python-babel,
 Standards-Version: 3.9.6
 Vcs-Browser: http://anonscm.debian.org/gitweb/?p=openstack/python-os-brick.git
 Vcs-Git: git://anonscm.debian.org/openstack/python-os-brick.git
-Homepage: http://github.com/openstack/os-brick
+Homepage: https://github.com/openstack/os-brick
 
 Package: python-os-brick
 Architecture: all
