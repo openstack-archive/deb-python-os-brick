@@ -29,6 +29,7 @@ import platform
 import re
 import requests
 import socket
+import struct
 import sys
 import tempfile
 import time
@@ -77,6 +78,8 @@ RBD = "RBD"
 SCALEIO = "SCALEIO"
 SCALITY = "SCALITY"
 QUOBYTE = "QUOBYTE"
+DISCO = "DISCO"
+VZSTORAGE = "VZSTORAGE"
 
 
 def _check_multipathd_running(root_helper, enforce_multipath):
@@ -153,6 +156,7 @@ class InitiatorConnector(executor.Executor):
             driver = host_driver.HostDriver()
         self.set_driver(driver)
         self.device_scan_attempts = device_scan_attempts
+        self._linuxscsi = linuxscsi.LinuxSCSI(root_helper, execute=execute)
 
     def set_driver(self, driver):
         """The driver is used to find used LUNs."""
@@ -209,7 +213,7 @@ class InitiatorConnector(executor.Executor):
                                 execute=execute,
                                 device_scan_attempts=device_scan_attempts,
                                 *args, **kwargs)
-        elif protocol in (NFS, GLUSTERFS, SCALITY, QUOBYTE):
+        elif protocol in (NFS, GLUSTERFS, SCALITY, QUOBYTE, VZSTORAGE):
             return RemoteFsConnector(mount_type=protocol.lower(),
                                      root_helper=root_helper,
                                      driver=driver,
@@ -252,6 +256,13 @@ class InitiatorConnector(executor.Executor):
                 driver=driver,
                 execute=execute,
                 device_scan_attempts=device_scan_attempts,
+                *args, **kwargs)
+        elif protocol == DISCO:
+            return DISCOConnector(
+                root_helper=root_helper,
+                driver=driver,
+                execute=execute,
+                device_scan_attempts=device_scan_attempts,
                 *args, **kwargs
             )
         else:
@@ -285,6 +296,45 @@ class InitiatorConnector(executor.Executor):
         if info is None:
             return False
         return True
+
+    def _discover_mpath_device(self, device_wwn, connection_properties,
+                               device_name):
+        """This method discovers a multipath device.
+
+        Discover a multipath device based on a defined connection_property
+        and a device_wwn and return the multipath_id and path of the multipath
+        enabled device if there is one.
+        """
+
+        path = self._linuxscsi.find_multipath_device_path(device_wwn)
+        device_path = None
+        multipath_id = None
+
+        if path is None:
+            mpath_info = self._linuxscsi.find_multipath_device(
+                device_name)
+            if mpath_info:
+                device_path = mpath_info['device']
+                multipath_id = device_wwn
+            else:
+                # we didn't find a multipath device.
+                # so we assume the kernel only sees 1 device
+                device_path = self.host_device
+                LOG.debug("Unable to find multipath device name for "
+                          "volume. Using path %(device)s for volume.",
+                          {'device': self.host_device})
+        else:
+            device_path = path
+            multipath_id = device_wwn
+        if connection_properties.get('access_mode', '') != 'ro':
+            try:
+                # Sometimes the multipath devices will show up as read only
+                # initially and need additional time/rescans to get to RW.
+                self._linuxscsi.wait_for_rw(device_wwn, device_path)
+            except exception.BlockDeviceReadOnly:
+                LOG.warning(_LW('Block device %s is still read-only. '
+                                'Continuing anyway.'), device_path)
+        return device_path, multipath_id
 
     @abc.abstractmethod
     def connect_volume(self, connection_properties):
@@ -376,6 +426,20 @@ class InitiatorConnector(executor.Executor):
         """
         pass
 
+    @abc.abstractmethod
+    def extend_volume(self, connection_properties):
+        """Update the attached volume's size.
+
+        This method will attempt to update the local hosts's
+        volume after the volume has been extended on the remote
+        system.  The new volume size in bytes will be returned.
+        If there is a failure to update, then None will be returned.
+
+        :param connection_properties: The volume connection properties.
+        :returns: new size of the volume.
+        """
+        pass
+
     def get_all_available_volumes(self, connection_properties=None):
         """Return all volumes that exist in the search directory.
 
@@ -395,13 +459,10 @@ class InitiatorConnector(executor.Executor):
         path = self.get_search_path()
         if path:
             # now find all entries in the search path
-            file_list = []
             if os.path.isdir(path):
-                files = os.listdir(path)
-                for entry in files:
-                    file_list.append(path + entry)
-
-            return file_list
+                path_items = [path, '/*']
+                file_filter = ''.join(path_items)
+                return glob.glob(file_filter)
         else:
             return []
 
@@ -423,6 +484,9 @@ class FakeConnector(InitiatorConnector):
 
     def get_search_path(self):
         return '/dev/disk/by-path'
+
+    def extend_volume(self, connection_properties):
+        return None
 
     def get_all_available_volumes(self, connection_properties=None):
         return ['/dev/disk/by-path/fake-volume-1',
@@ -741,6 +805,25 @@ class ISCSIConnector(InitiatorConnector):
             run_as_root=True,
             root_helper=self._root_helper)
 
+    @synchronized('extend_volume')
+    def extend_volume(self, connection_properties):
+        """Update the local kernel's size information.
+
+        Try and update the local kernel's size information
+        for an iSCSI volume.
+        """
+        LOG.info(_LI("Extend volume for %s"), connection_properties)
+
+        volume_paths = self.get_volume_paths(connection_properties)
+        LOG.info(_LI("Found paths for volume %s"), volume_paths)
+        if volume_paths:
+            return self._linuxscsi.extend_volume(volume_paths[0])
+        else:
+            LOG.warning(_LW("Couldn't find any volume paths on the host to "
+                            "extend volume for %(props)s"),
+                        {'props': connection_properties})
+            raise exception.VolumePathsNotFound()
+
     @synchronized('connect_volume')
     def connect_volume(self, connection_properties):
         """Attach the volume to instance_name.
@@ -797,20 +880,18 @@ class ISCSIConnector(InitiatorConnector):
         # Choose an accessible host device
         host_device = next(dev for dev in host_devices if os.path.exists(dev))
 
-        if self.use_multipath:
-            # We use the multipath device instead of the single path device
-            self._rescan_multipath()
-            multipath_device = self._get_multipath_device_name(host_device)
-            if multipath_device is not None:
-                host_device = multipath_device
-                LOG.debug("Found multipath device name for "
-                          "volume. Using path %(device)s "
-                          "for volume.", {'device': host_device})
-
         # find out the WWN of the device
         device_wwn = self._linuxscsi.get_scsi_wwn(host_device)
         LOG.debug("Device WWN = '%(wwn)s'", {'wwn': device_wwn})
         device_info['scsi_wwn'] = device_wwn
+
+        if self.use_multipath:
+            (host_device, multipath_id) = (super(
+                ISCSIConnector, self)._discover_mpath_device(
+                device_wwn, connection_properties, host_device))
+            if multipath_id:
+                device_info['multipath_id'] = multipath_id
+
         device_info['path'] = host_device
 
         LOG.debug("connect_volume returning %s", device_info)
@@ -900,7 +981,8 @@ class ISCSIConnector(InitiatorConnector):
         brackets. Udev code specifically forbids that.
         """
         portal, iqn, lun = target
-        return (portal.replace('[', '').replace(']', ''), iqn, lun)
+        return (portal.replace('[', '').replace(']', ''), iqn,
+                self._linuxscsi.process_lun_id(lun))
 
     def _get_device_path(self, connection_properties):
         if self._get_transport() == "default":
@@ -946,7 +1028,7 @@ class ISCSIConnector(InitiatorConnector):
                                    check_exit_code=check_exit_code,
                                    attempts=attempts,
                                    delay_on_retry=delay_on_retry)
-        msg = ("iscsiadm %(iscsi_command)s: stdout=%(out)s stderr=%(err)s",
+        msg = ("iscsiadm %(iscsi_command)s: stdout=%(out)s stderr=%(err)s" %
                {'iscsi_command': iscsi_command, 'out': out, 'err': err})
         # don't let passwords be shown in log output
         LOG.debug(strutils.mask_password(msg))
@@ -1170,7 +1252,8 @@ class ISCSIConnector(InitiatorConnector):
                 mpath_map['/dev/' + m[1].split(" ")[0]] = mpath_dev
 
         if mpath_line and not mpath_map:
-            LOG.warning(_LW("Failed to parse the output of multipath -ll."))
+            LOG.warning(_LW("Failed to parse the output of multipath -ll. "
+                            "stdout: %s"), out)
         return mpath_map
 
     def _run_iscsi_session(self):
@@ -1261,6 +1344,22 @@ class FibreChannelConnector(InitiatorConnector):
 
         return volume_paths
 
+    @synchronized('extend_volume')
+    def extend_volume(self, connection_properties):
+        """Update the local kernel's size information.
+
+        Try and update the local kernel's size information
+        for an FC volume.
+        """
+        volume_paths = self.get_volume_paths(connection_properties)
+        if volume_paths:
+            return self._linuxscsi.extend_volume(volume_paths[0])
+        else:
+            LOG.warning(_LW("Couldn't find any volume paths on the host to "
+                            "extend volume for %(props)s"),
+                        {'props': connection_properties})
+            raise exception.VolumePathsNotFound()
+
     @synchronized('connect_volume')
     def connect_volume(self, connection_properties):
         """Attach the volume to instance_name.
@@ -1334,37 +1433,12 @@ class FibreChannelConnector(InitiatorConnector):
         # see if the new drive is part of a multipath
         # device.  If so, we'll use the multipath device.
         if self.use_multipath:
-
-            path = self._linuxscsi.find_multipath_device_path(device_wwn)
-            if path is not None:
-                LOG.debug("Multipath device path discovered %(device)s",
-                          {'device': path})
-                device_path = path
-                # for temporary backwards compatibility
-                device_info['multipath_id'] = device_wwn
-            else:
-                mpath_info = self._linuxscsi.find_multipath_device(
-                    self.device_name)
-                if mpath_info:
-                    device_path = mpath_info['device']
-                    # for temporary backwards compatibility
-                    device_info['multipath_id'] = device_wwn
-                else:
-                    # we didn't find a multipath device.
-                    # so we assume the kernel only sees 1 device
-                    device_path = self.host_device
-                    LOG.debug("Unable to find multipath device name for "
-                              "volume. Using path %(device)s for volume.",
-                              {'device': self.host_device})
-
-            if connection_properties.get('access_mode', '') != 'ro':
-                try:
-                    # Sometimes the multipath devices will show up as read only
-                    # initially and need additional time/rescans to get to RW.
-                    self._linuxscsi.wait_for_rw(device_wwn, device_path)
-                except exception.BlockDeviceReadOnly:
-                    LOG.warning(_LW('Block device %s is still read-only. '
-                                    'Continuing anyway.'), device_path)
+            (device_path, multipath_id) = (super(
+                FibreChannelConnector, self)._discover_mpath_device(
+                device_wwn, connection_properties, self.device_name))
+            if multipath_id:
+                # only set the multipath_id if we found one
+                device_info['multipath_id'] = multipath_id
 
         else:
             device_path = self.host_device
@@ -1379,7 +1453,7 @@ class FibreChannelConnector(InitiatorConnector):
             host_device = "/dev/disk/by-path/pci-%s-fc-%s-lun-%s" % (
                 pci_num,
                 target_wwn,
-                lun)
+                self._linuxscsi.process_lun_id(lun))
             host_devices.append(host_device)
         return host_devices
 
@@ -1674,6 +1748,10 @@ class AoEConnector(InitiatorConnector):
         LOG.debug('aoe-flush %(dev)s: stdout=%(out)s stderr%(err)s',
                   {'dev': aoe_device, 'out': out, 'err': err})
 
+    def extend_volume(self, connection_properties):
+        # TODO(walter-boring): is this possible?
+        raise NotImplementedError
+
 
 class RemoteFsConnector(InitiatorConnector):
     """Connector class to attach/detach NFS and GlusterFS volumes."""
@@ -1687,7 +1765,8 @@ class RemoteFsConnector(InitiatorConnector):
         if conn:
             mount_point_base = conn.get('mount_point_base')
             mount_type_lower = mount_type.lower()
-            if mount_type_lower in ('nfs', 'glusterfs', 'scality', 'quobyte'):
+            if mount_type_lower in ('nfs', 'glusterfs', 'scality',
+                                    'quobyte', 'vzstorage'):
                 kwargs[mount_type_lower + '_mount_point_base'] = (
                     kwargs.get(mount_type_lower + '_mount_point_base') or
                     mount_point_base)
@@ -1752,6 +1831,10 @@ class RemoteFsConnector(InitiatorConnector):
         :param device_info: historical difference, but same as connection_props
         :type device_info: dict
         """
+
+    def extend_volume(self, connection_properties):
+        # TODO(walter-boring): is this possible?
+        raise NotImplementedError
 
 
 class RBDConnector(InitiatorConnector):
@@ -1841,6 +1924,10 @@ class RBDConnector(InitiatorConnector):
 
         return True
 
+    def extend_volume(self, connection_properties):
+        # TODO(walter-boring): is this possible?
+        raise NotImplementedError
+
 
 class LocalConnector(InitiatorConnector):
     """"Connector class to attach/detach File System backed volumes."""
@@ -1890,6 +1977,10 @@ class LocalConnector(InitiatorConnector):
         :type device_info: dict
         """
         pass
+
+    def extend_volume(self, connection_properties):
+        # TODO(walter-boring): is this possible?
+        raise NotImplementedError
 
 
 class DRBDConnector(InitiatorConnector):
@@ -1967,6 +2058,10 @@ class DRBDConnector(InitiatorConnector):
     def get_search_path(self):
         # TODO(linbit): is it allowed to return "/dev", or is that too broad?
         return None
+
+    def extend_volume(self, connection_properties):
+        # TODO(walter-boring): is this possible?
+        raise NotImplementedError
 
 
 class HuaweiStorHyperConnector(InitiatorConnector):
@@ -2123,6 +2218,10 @@ class HuaweiStorHyperConnector(InitiatorConnector):
         else:
             return None
 
+    def extend_volume(self, connection_properties):
+        # TODO(walter-boring): is this possible?
+        raise NotImplementedError
+
 
 class HGSTConnector(InitiatorConnector):
     """Connector class to attach/detach HGST volumes."""
@@ -2267,6 +2366,10 @@ class HGSTConnector(InitiatorConnector):
                 msg = (_("Unable to set apphost for space %s") %
                        connection_properties['name'])
                 raise exception.BrickException(message=msg)
+
+    def extend_volume(self, connection_properties):
+        # TODO(walter-boring): is this possible?
+        raise NotImplementedError
 
 
 class ScaleIOConnector(InitiatorConnector):
@@ -2508,6 +2611,7 @@ class ScaleIOConnector(InitiatorConnector):
                        'path': self.volume_path}
         return device_info
 
+    @lockutils.synchronized('scaleio', 'scaleio-')
     def connect_volume(self, connection_properties):
         """Connect the volume.
 
@@ -2636,6 +2740,7 @@ class ScaleIOConnector(InitiatorConnector):
 
         return device_info
 
+    @lockutils.synchronized('scaleio', 'scaleio-')
     def disconnect_volume(self, connection_properties, device_info):
         """Disconnect the ScaleIO volume.
 
@@ -2711,3 +2816,176 @@ class ScaleIOConnector(InitiatorConnector):
                         'err': response['message']})
                 LOG.error(msg)
                 raise exception.BrickException(message=msg)
+
+    def extend_volume(self, connection_properties):
+        # TODO(walter-boring): is this possible?
+        raise NotImplementedError
+
+
+class DISCOConnector(InitiatorConnector):
+    """Class implements the connector driver for DISCO."""
+
+    DISCO_PREFIX = 'dms'
+
+    def __init__(self, root_helper, driver=None, execute=putils.execute,
+                 device_scan_attempts=DEVICE_SCAN_ATTEMPTS_DEFAULT,
+                 *args, **kwargs):
+        """Init DISCO connector."""
+        super(DISCOConnector, self).__init__(
+            root_helper,
+            driver=driver,
+            execute=execute,
+            device_scan_attempts=device_scan_attempts,
+            *args, **kwargs
+        )
+        LOG.info(_LI("Init DISCO connector"))
+
+        self.server_port = None
+        self.server_ip = None
+
+    def get_search_path(self):
+        """Get directory path where to get DISCO volumes."""
+        return "/dev"
+
+    def get_volume_paths(self, connection_properties):
+        """Get config for DISCO volume driver."""
+        self.get_config(connection_properties)
+        volume_paths = []
+        disco_id = connection_properties['disco_id']
+        disco_dev = '/dev/dms%s' % (disco_id)
+        device_paths = [disco_dev]
+        for path in device_paths:
+            if os.path.exists(path):
+                volume_paths.append(path)
+        return volume_paths
+
+    def get_all_available_volumes(self, connection_properties=None):
+        """Return all DISCO volumes that exist in the search directory."""
+        path = self.get_search_path()
+
+        if os.path.isdir(path):
+            path_items = [path, '/', self.DISCO_PREFIX, '*']
+            file_filter = ''.join(path_items)
+            return glob.glob(file_filter)
+        else:
+            return []
+
+    def get_config(self, connection_properties):
+        """Get config for DISCO volume driver."""
+        self.server_port = (
+            six.text_type(connection_properties['conf']['server_port']))
+        self.server_ip = (
+            six.text_type(connection_properties['conf']['server_ip']))
+
+        disco_id = connection_properties['disco_id']
+        disco_dev = '/dev/dms%s' % (disco_id)
+        device_info = {'type': 'block',
+                       'path': disco_dev}
+        return device_info
+
+    @synchronized('connect_volume')
+    def connect_volume(self, connection_properties):
+        """Connect the volume. Returns xml for libvirt."""
+        LOG.debug("Enter in DISCO connect_volume")
+        device_info = self.get_config(connection_properties)
+        LOG.debug("Device info : %s.", device_info)
+        disco_id = connection_properties['disco_id']
+        disco_dev = '/dev/dms%s' % (disco_id)
+        LOG.debug("Attaching %s", disco_dev)
+
+        self._mount_disco_volume(disco_dev, disco_id)
+        return device_info
+
+    @synchronized('connect_volume')
+    def disconnect_volume(self, connection_properties, device_info):
+        """Detach the volume from instance."""
+        disco_id = connection_properties['disco_id']
+        disco_dev = '/dev/dms%s' % (disco_id)
+        LOG.debug("detaching %s", disco_dev)
+
+        if os.path.exists(disco_dev):
+            ret = self._send_disco_vol_cmd(self.server_ip,
+                                           self.server_port,
+                                           2,
+                                           disco_id)
+            if ret is not None:
+                msg = _("Detach volume failed")
+                raise exception.BrickException(message=msg)
+        else:
+            LOG.info(_LI("Volume already detached from host"))
+
+    def _mount_disco_volume(self, path, volume_id):
+        """Send request to mount volume on physical host."""
+        LOG.debug("Enter in mount disco volume %(port)s "
+                  "and %(ip)s." %
+                  {'port': self.server_port,
+                   'ip': self.server_ip})
+
+        if not os.path.exists(path):
+            ret = self._send_disco_vol_cmd(self.server_ip,
+                                           self.server_port,
+                                           1,
+                                           volume_id)
+            if ret is not None:
+                msg = _("Attach volume failed")
+                raise exception.BrickException(message=msg)
+        else:
+            LOG.info(_LI("Volume already attached to host"))
+
+    def _connect_tcp_socket(self, client_ip, client_port):
+        """Connect to TCP socket."""
+        sock = None
+
+        for res in socket.getaddrinfo(client_ip,
+                                      client_port,
+                                      socket.AF_UNSPEC,
+                                      socket.SOCK_STREAM):
+                aff, socktype, proto, canonname, saa = res
+                try:
+                    sock = socket.socket(aff, socktype, proto)
+                except socket.error:
+                    sock = None
+                    continue
+                try:
+                    sock.connect(saa)
+                except socket.error:
+                    sock.close()
+                    sock = None
+                    continue
+                break
+
+        if sock is None:
+            LOG.error(_LE("Cannot connect TCP socket"))
+        return sock
+
+    def _send_disco_vol_cmd(self, client_ip, client_port, op_code, vol_id):
+        """Send DISCO client socket command."""
+        s = self._connect_tcp_socket(client_ip, int(client_port))
+
+        if s is not None:
+            inst_id = 'DEFAULT-INSTID'
+            pktlen = 2 + 8 + len(inst_id)
+            LOG.debug("pktlen=%(plen)s op=%(op)s "
+                      "vol_id=%(vol_id)s, inst_id=%(inst_id)s",
+                      {'plen': pktlen, 'op': op_code,
+                       'vol_id': vol_id, 'inst_id': inst_id})
+            data = struct.pack("!HHQ14s",
+                               pktlen,
+                               op_code,
+                               int(vol_id),
+                               inst_id)
+            s.sendall(data)
+            ret = s.recv(4)
+            s.close()
+
+            LOG.debug("Received ret len=%(lenR)d, ret=%(ret)s",
+                      {'lenR': len(repr(ret)), 'ret': repr(ret)})
+
+            ret_val = "".join("%02x" % ord(c) for c in ret)
+
+            if ret_val != '00000000':
+                return 'ERROR'
+        return None
+
+    def extend_volume(self, connection_properties):
+        raise NotImplementedError

@@ -98,6 +98,10 @@ class VolumeDeviceNotFound(BrickException):
     message = _("Volume device not found at %(device)s.")
 
 
+class VolumePathsNotFound(BrickException):
+    message = _("Could not find any paths for the volume.")
+
+
 class VolumePathNotRemoved(BrickException):
     message = _("Volume path %(volume_path)s was not removed in time.")
 
@@ -116,3 +120,15 @@ class FailedISCSITargetPortalLogin(BrickException):
 
 class BlockDeviceReadOnly(BrickException):
     message = _("Block device %(device)s is Read-Only.")
+
+
+class VolumeGroupNotFound(BrickException):
+    message = _("Unable to find Volume Group: %(vg_name)s")
+
+
+class VolumeGroupCreationFailed(BrickException):
+    message = _("Failed to create Volume Group: %(vg_name)s")
+
+
+class CommandExecutionFailed(BrickException):
+    message = _("Failed to execute command %(cmd)s")
