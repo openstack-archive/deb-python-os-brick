@@ -1,4 +1,4 @@
-python-os-brick (1.1.0-1) UNRELEASED; urgency=medium
+python-os-brick (1.1.0-1) experimental; urgency=medium
 
   [ Ondřej Nový ]
   * Fixed homepage (https).
@@ -9,7 +9,10 @@ python-os-brick (1.1.0-1) UNRELEASED; urgency=medium
   * d/control: Align (Build-)Depends with upstream.
   * d/p/drop-reno-sphinxext.patch: Drop reno-sphinxext from sphinx config.
 
- -- Corey Bryant <corey.bryant@canonical.com>  Thu, 03 Mar 2016 10:35:55 -0500
+  [ Thomas Goirand ]
+  * Standards-Version: 3.9.7 (no change).
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 03 Mar 2016 18:06:03 +0000
 
 python-os-brick (0.7.0-1) experimental; urgency=medium
 
