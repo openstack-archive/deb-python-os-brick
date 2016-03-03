@@ -7,6 +7,7 @@ python-os-brick (1.1.0-1) UNRELEASED; urgency=medium
   [ Corey Bryant ]
   * New upstream release.
   * d/control: Align (Build-)Depends with upstream.
+  * d/p/drop-reno-sphinxext.patch: Drop reno-sphinxext from sphinx config.
 
  -- Corey Bryant <corey.bryant@canonical.com>  Thu, 03 Mar 2016 10:35:55 -0500
 
