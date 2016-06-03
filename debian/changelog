@@ -1,3 +1,9 @@
+python-os-brick (1.2.0-4) unstable; urgency=medium
+
+  * Really add open-iscsi to solve live migration issues.
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 03 Jun 2016 13:44:41 +0000
+
 python-os-brick (1.2.0-3) unstable; urgency=medium
 
   [ Ondřej Nový ]
