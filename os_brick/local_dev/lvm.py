@@ -54,7 +54,8 @@ class LVM(executor.Executor):
                           and we want to create it
         :param physical_volumes: List of PVs to build VG on
         :param lvm_type: VG and Volume type (default, or thin)
-        :param executor: Execute method to use, None uses common/processutils
+        :param executor: Execute method to use, None uses
+                         oslo_concurrency.processutils
 
         """
         super(LVM, self).__init__(execute=executor, root_helper=root_helper)
@@ -492,7 +493,7 @@ class LVM(executor.Executor):
 
         """
 
-        if not self.supports_thin_provisioning(self._root_helper):
+        if not LVM.supports_thin_provisioning(self._root_helper):
             LOG.error(_LE('Requested to setup thin provisioning, '
                           'however current LVM version does not '
                           'support it.'))
