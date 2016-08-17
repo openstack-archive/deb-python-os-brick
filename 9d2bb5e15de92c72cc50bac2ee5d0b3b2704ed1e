@@ -1,0 +1,10 @@
+Code-Review+2: Duncan Thomas <duncan.thomas@gmail.com>
+Code-Review+1: Tomoki Sekiyama <tomoki.sekiyama.qu@hitachi.com>
+Code-Review+2: Walter A. Boring IV (hemna) <walter.boring@hpe.com>
+Workflow+1: Walter A. Boring IV (hemna) <walter.boring@hpe.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 07 Jul 2016 21:54:59 +0000
+Reviewed-on: https://review.openstack.org/338017
+Project: openstack/deb-python-os-brick
+Branch: refs/heads/master
