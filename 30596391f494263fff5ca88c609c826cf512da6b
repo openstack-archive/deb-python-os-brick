@@ -1,0 +1,9 @@
+Code-Review+2: Sean McGinnis <sean.mcginnis@gmail.com>
+Code-Review+2: Walter A. Boring IV (hemna) <walter.boring@hpe.com>
+Workflow+1: Walter A. Boring IV (hemna) <walter.boring@hpe.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 02 Dec 2015 20:10:19 +0000
+Reviewed-on: https://review.openstack.org/252320
+Project: openstack/deb-python-os-brick
+Branch: refs/heads/stable/liberty
