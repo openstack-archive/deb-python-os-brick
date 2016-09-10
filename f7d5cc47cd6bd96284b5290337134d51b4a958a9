@@ -1,0 +1,9 @@
+Code-Review+2: Walter A. Boring IV (hemna) <walter.boring@hpe.com>
+Code-Review+2: Patrick East <patrick.east@purestorage.com>
+Workflow+1: Patrick East <patrick.east@purestorage.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 08 Sep 2016 19:52:17 +0000
+Reviewed-on: https://review.openstack.org/367550
+Project: openstack/deb-python-os-brick
+Branch: refs/heads/master
