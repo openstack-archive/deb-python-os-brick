@@ -18,12 +18,14 @@
    and root_helper settings, so this provides that hook.
 """
 
-from oslo_concurrency import processutils as putils
+from os_brick.privileged import rootwrap as priv_rootwrap
 
 
 class Executor(object):
-    def __init__(self, root_helper, execute=putils.execute,
+    def __init__(self, root_helper, execute=None,
                  *args, **kwargs):
+        if execute is None:
+            execute = priv_rootwrap.execute
         self.set_execute(execute)
         self.set_root_helper(root_helper)
 

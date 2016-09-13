@@ -17,8 +17,10 @@ import os
 import tempfile
 
 from oslo_concurrency import processutils as putils
+import six
 
 from os_brick import exception
+from os_brick.privileged import rootwrap as priv_rootwrap
 from os_brick.remotefs import remotefs
 from os_brick.tests import base
 
@@ -27,13 +29,12 @@ class RemoteFsClientTestCase(base.TestCase):
 
     def setUp(self):
         super(RemoteFsClientTestCase, self).setUp()
-        self.mock_execute = mock.patch.object(putils, 'execute').start()
+        self.mock_execute = self.mock_object(priv_rootwrap, 'execute')
 
     @mock.patch.object(remotefs.RemoteFsClient, '_read_mounts',
                        return_value=[])
     def test_cifs(self, mock_read_mounts):
         client = remotefs.RemoteFsClient("cifs", root_helper='true',
-                                         execute=putils.execute,
                                          smbfs_mount_point_base='/mnt')
         share = '10.0.0.1:/qwe'
         mount_point = client.get_mount_point(share)
@@ -48,7 +49,6 @@ class RemoteFsClientTestCase(base.TestCase):
                        return_value=[])
     def test_vzstorage_by_cluster_name(self, mock_read_mounts):
         client = remotefs.RemoteFsClient("vzstorage", root_helper='true',
-                                         execute=putils.execute,
                                          vzstorage_mount_point_base='/mnt')
         share = 'qwe'
         cluster_name = share
@@ -64,7 +64,6 @@ class RemoteFsClientTestCase(base.TestCase):
                        return_value=[])
     def test_vzstorage_with_auth(self, mock_read_mounts):
         client = remotefs.RemoteFsClient("vzstorage", root_helper='true',
-                                         execute=putils.execute,
                                          vzstorage_mount_point_base='/mnt')
         cluster_name = 'qwe'
         password = '123456'
@@ -80,11 +79,11 @@ class RemoteFsClientTestCase(base.TestCase):
                            run_as_root=True)]
         self.mock_execute.assert_has_calls(calls)
 
+    @mock.patch('os.path.exists', return_value=False)
     @mock.patch.object(remotefs.RemoteFsClient, '_read_mounts',
                        return_value=[])
-    def test_vzstorage_with_mds_list(self, mock_read_mounts):
+    def test_vzstorage_with_mds_list(self, mock_read_mounts, mock_exists):
         client = remotefs.RemoteFsClient("vzstorage", root_helper='true',
-                                         execute=putils.execute,
                                          vzstorage_mount_point_base='/mnt')
         cluster_name = 'qwe'
         mds_list = ['10.0.0.1', '10.0.0.2']
@@ -92,13 +91,22 @@ class RemoteFsClientTestCase(base.TestCase):
         mount_point = client.get_mount_point(share)
         vz_conf_dir = os.path.join('/etc/pstorage/clusters/', cluster_name)
 
-        tmp_dir = tempfile.mkdtemp()
+        tmp_dir = '/tmp/fake_dir/'
+
         with mock.patch.object(tempfile, 'mkdtemp',
                                return_value=tmp_dir):
-            client.mount(share)
+            mock_open = mock.mock_open()
+            with mock.patch.object(six.moves.builtins, "open",
+                                   mock_open, create=True):
+                client.mount(share)
 
-        saved_mds_list = open(os.path.join(tmp_dir, 'bs_list')).read().split()
-        self.assertEqual(set(mds_list), set(saved_mds_list))
+                write_calls = [mock.call(tmp_dir + 'bs_list', 'w'),
+                               mock.call().__enter__(),
+                               mock.call().write('10.0.0.1\n'),
+                               mock.call().write('10.0.0.2\n'),
+                               mock.call().__exit__(None, None, None)]
+
+                mock_open.assert_has_calls(write_calls)
         calls = [mock.call('mkdir', '-p', mount_point, check_exit_code=0),
                  mock.call('cp', '-rf', tmp_dir, vz_conf_dir,
                            run_as_root=True, root_helper='true'),
@@ -113,7 +121,6 @@ class RemoteFsClientTestCase(base.TestCase):
                        return_value=[])
     def test_vzstorage_invalid_share(self, mock_read_mounts):
         client = remotefs.RemoteFsClient("vzstorage", root_helper='true',
-                                         execute=putils.execute,
                                          vzstorage_mount_point_base='/mnt')
         self.assertRaises(exception.BrickException, client.mount, ':')
 
@@ -121,7 +128,6 @@ class RemoteFsClientTestCase(base.TestCase):
                        return_value=[])
     def test_nfs(self, mock_read_mounts):
         client = remotefs.RemoteFsClient("nfs", root_helper='true',
-                                         execute=putils.execute,
                                          nfs_mount_point_base='/mnt')
         share = '10.0.0.1:/qwe'
         mount_point = client.get_mount_point(share)
@@ -135,20 +141,19 @@ class RemoteFsClientTestCase(base.TestCase):
     def test_read_mounts(self):
         mounts = """device1 on mnt_point1
                     device2 on mnt_point2 type ext4 opts"""
-        with mock.patch.object(putils, 'execute', return_value=[mounts, '']):
+        with mock.patch.object(priv_rootwrap, 'execute',
+                               return_value=[mounts, '']):
             client = remotefs.RemoteFsClient("cifs", root_helper='true',
-                                             execute=putils.execute,
                                              smbfs_mount_point_base='/mnt')
             ret = client._read_mounts()
             self.assertEqual(ret, {'mnt_point1': 'device1',
                                    'mnt_point2': 'device2'})
 
-    @mock.patch.object(putils, 'execute')
+    @mock.patch.object(priv_rootwrap, 'execute')
     @mock.patch.object(remotefs.RemoteFsClient, '_do_mount')
     def test_mount_already_mounted(self, mock_do_mount, mock_execute):
         share = "10.0.0.1:/share"
         client = remotefs.RemoteFsClient("cifs", root_helper='true',
-                                         execute=putils.execute,
                                          smbfs_mount_point_base='/mnt')
         mounts = {client.get_mount_point(share): 'some_dev'}
         with mock.patch.object(client, '_read_mounts',
@@ -160,7 +165,7 @@ class RemoteFsClientTestCase(base.TestCase):
     def _test_no_mount_point(self, fs_type):
         self.assertRaises(exception.InvalidParameterValue,
                           remotefs.RemoteFsClient,
-                          fs_type, root_helper='true', execute=putils.execute)
+                          fs_type, root_helper='true')
 
     def test_no_mount_point_nfs(self):
         self._test_no_mount_point('nfs')
@@ -180,7 +185,7 @@ class RemoteFsClientTestCase(base.TestCase):
     def test_invalid_fs(self):
         self.assertRaises(exception.ProtocolNotSupported,
                           remotefs.RemoteFsClient,
-                          'my_fs', root_helper='true', execute=putils.execute)
+                          'my_fs', root_helper='true')
 
     def test_init_sets_mount_base(self):
         client = remotefs.RemoteFsClient("cifs", root_helper='true',
@@ -216,7 +221,8 @@ class ScalityRemoteFsClientTestCase(base.TestCase):
     @mock.patch('os_brick.remotefs.remotefs.RemoteFsClient._do_mount')
     def test_mount(self, mock_do_mount, mock_execute):
         fsclient = remotefs.ScalityRemoteFsClient(
-            'scality', root_helper='true', scality_mount_point_base='/fake')
+            'scality', root_helper='true', scality_mount_point_base='/fake',
+            execute=putils.execute)
         with mock.patch.object(fsclient, '_read_mounts', return_value={}):
             fsclient.mount('fake')
 

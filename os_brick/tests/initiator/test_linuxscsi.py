@@ -31,9 +31,8 @@ class LinuxSCSITestCase(base.TestCase):
     def setUp(self):
         super(LinuxSCSITestCase, self).setUp()
         self.cmds = []
-        mock.patch.object(os.path, 'realpath', return_value='/dev/sdc').start()
-        mock.patch.object(os, 'stat', returns=os.stat(__file__)).start()
-        self.addCleanup(mock.patch.stopall)
+        self.mock_object(os.path, 'realpath', return_value='/dev/sdc')
+        self.mock_object(os, 'stat', returns=os.stat(__file__))
         self.linuxscsi = linuxscsi.LinuxSCSI(None, execute=self.fake_execute)
 
     def fake_execute(self, *cmd, **kwargs):
@@ -169,11 +168,11 @@ class LinuxSCSITestCase(base.TestCase):
 
         self.linuxscsi.remove_multipath_device('/dev/dm-3')
         expected_commands = [
+            ('multipath -f 350002ac20398383d'),
             ('blockdev --flushbufs /dev/sde'),
             ('tee -a /sys/block/sde/device/delete'),
             ('blockdev --flushbufs /dev/sdf'),
-            ('tee -a /sys/block/sdf/device/delete'),
-            ('multipath -f 350002ac20398383d'), ]
+            ('tee -a /sys/block/sdf/device/delete'), ]
         self.assertEqual(expected_commands, self.cmds)
 
     def test_find_multipath_device_3par_ufn(self):
@@ -275,7 +274,7 @@ class LinuxSCSITestCase(base.TestCase):
 
     def test_find_multipath_device_with_error(self):
         def fake_execute(*cmd, **kwargs):
-            out = ("Oct 13 10:24:01 | /lib/udev/scsi_id exitted with 1\n"
+            out = ("Oct 13 10:24:01 | /lib/udev/scsi_id exited with 1\n"
                    "36005076303ffc48e0000000000000101 dm-2 IBM,2107900\n"
                    "size=1.0G features='1 queue_if_no_path' hwhandler='0'"
                    " wp=rw\n"
@@ -477,7 +476,7 @@ loop0                                     0"""
 
         self.linuxscsi._execute = fake_execute
         info = self.linuxscsi.find_multipath_device('/dev/sdd')
-        LOG.error("Device info: %s" % info)
+        LOG.error("Device info: %s", info)
 
         self.assertEqual('36005076303ffc48e0000000000000101', info['id'])
         self.assertEqual('36005076303ffc48e0000000000000101', info['name'])
@@ -508,7 +507,7 @@ loop0                                     0"""
         size = 'junk'
         mock_execute.return_value = (size, None)
         ret_size = self.linuxscsi.get_device_size('/dev/fake')
-        self.assertEqual(None, ret_size)
+        self.assertIsNone(ret_size)
 
         size_bad = '1024\n'
         size_good = 1024
@@ -657,3 +656,11 @@ loop0                                     0"""
         result = self.linuxscsi.process_lun_id(lun_id)
         expected = 13
         self.assertEqual(expected, result)
+
+    @mock.patch('os_brick.privileged.rootwrap')
+    def test_is_multipath_running_default_executor(self, mock_rootwrap):
+        self.assertTrue(
+            linuxscsi.LinuxSCSI.is_multipath_running(
+                False, None, mock_rootwrap.execute))
+        mock_rootwrap.execute.assert_called_once_with(
+            'multipathd', 'show', 'status', run_as_root=True, root_helper=None)

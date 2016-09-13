@@ -94,6 +94,10 @@ class NoFibreChannelVolumeDeviceFound(BrickException):
     message = _("Unable to find a Fibre Channel volume device.")
 
 
+class VolumeNotDeactivated(BrickException):
+    message = _('Volume %(name)s was not deactivated in time.')
+
+
 class VolumeDeviceNotFound(BrickException):
     message = _("Volume device not found at %(device)s.")
 
@@ -112,6 +116,10 @@ class ProtocolNotSupported(BrickException):
 
 class TargetPortalNotFound(BrickException):
     message = _("Unable to find target portal %(target_portal)s.")
+
+
+class TargetPortalsNotFound(BrickException):
+    message = _("Unable to find target portal in %(target_portals)s.")
 
 
 class FailedISCSITargetPortalLogin(BrickException):
@@ -141,3 +149,8 @@ class VolumeDriverException(BrickException):
 class InvalidIOHandleObject(BrickException):
     message = _('IO handle of %(protocol)s has wrong object '
                 'type %(actual_type)s.')
+
+
+class VolumeEncryptionNotSupported(Invalid):
+    message = _("Volume encryption is not supported for %(volume_type)s "
+                "volume %(volume_id)s.")

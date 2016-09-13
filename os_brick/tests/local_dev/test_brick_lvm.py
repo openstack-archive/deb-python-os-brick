@@ -17,6 +17,7 @@ from oslo_concurrency import processutils
 
 from os_brick import exception
 from os_brick.local_dev import lvm as brick
+from os_brick.privileged import rootwrap as priv_rootwrap
 from os_brick.tests import base
 
 
@@ -27,7 +28,7 @@ class BrickLvmTestCase(base.TestCase):
         self.volume_group_name = 'fake-vg'
 
         # Stub processutils.execute for static methods
-        self.mock_object(processutils, 'execute',
+        self.mock_object(priv_rootwrap, 'execute',
                          self.fake_execute)
         self.vg = brick.LVM(self.volume_group_name,
                             'sudo',
@@ -49,7 +50,11 @@ class BrickLvmTestCase(base.TestCase):
     def fake_customised_lvm_version(obj, *cmd, **kwargs):
         return ("  LVM version:     2.02.100(2)-RHEL6 (2013-09-12)\n", "")
 
+    def fake_f23_lvm_version(obj, *cmd, **kwargs):
+        return ("  LVM version:     2.02.132(2) (2015-09-22)\n", "")
+
     def fake_execute(obj, *cmd, **kwargs):
+        # TODO(eharney): remove this and move to per-test mocked execute calls
         cmd_string = ', '.join(cmd)
         data = "\n"
 
@@ -131,6 +136,8 @@ class BrickLvmTestCase(base.TestCase):
             else:
                 data = "  9:12\n"
         elif 'lvcreate, -T, -L, ' in cmd_string:
+            pass
+        elif 'lvcreate, -T, -l, 100%FREE' in cmd_string:
             pass
         elif 'lvcreate, -T, -V, ' in cmd_string:
             pass
@@ -232,30 +239,30 @@ class BrickLvmTestCase(base.TestCase):
         # use the self._executor fake we pass in on init
         # so we need to stub processutils.execute appropriately
 
-        with mock.patch.object(processutils, 'execute',
+        with mock.patch.object(priv_rootwrap, 'execute',
                                side_effect=self.fake_execute):
             self.assertTrue(self.vg.supports_thin_provisioning('sudo'))
 
-        with mock.patch.object(processutils, 'execute',
+        with mock.patch.object(priv_rootwrap, 'execute',
                                side_effect=self.fake_pretend_lvm_version):
             self.assertTrue(self.vg.supports_thin_provisioning('sudo'))
 
-        with mock.patch.object(processutils, 'execute',
+        with mock.patch.object(priv_rootwrap, 'execute',
                                side_effect=self.fake_old_lvm_version):
             self.assertFalse(self.vg.supports_thin_provisioning('sudo'))
 
-        with mock.patch.object(processutils, 'execute',
+        with mock.patch.object(priv_rootwrap, 'execute',
                                side_effect=self.fake_customised_lvm_version):
             self.assertTrue(self.vg.supports_thin_provisioning('sudo'))
 
     def test_snapshot_lv_activate_support(self):
         self.vg._supports_snapshot_lv_activation = None
-        with mock.patch.object(processutils, 'execute',
+        with mock.patch.object(priv_rootwrap, 'execute',
                                side_effect=self.fake_execute):
             self.assertTrue(self.vg.supports_snapshot_lv_activation)
 
         self.vg._supports_snapshot_lv_activation = None
-        with mock.patch.object(processutils, 'execute',
+        with mock.patch.object(priv_rootwrap, 'execute',
                                side_effect=self.fake_old_lvm_version):
             self.assertFalse(self.vg.supports_snapshot_lv_activation)
 
@@ -265,33 +272,27 @@ class BrickLvmTestCase(base.TestCase):
         """Tests if lvchange -K is available via a lvm2 version check."""
 
         self.vg._supports_lvchange_ignoreskipactivation = None
-        with mock.patch.object(processutils, 'execute',
+        with mock.patch.object(priv_rootwrap, 'execute',
                                side_effect=self.fake_pretend_lvm_version):
             self.assertTrue(self.vg.supports_lvchange_ignoreskipactivation)
 
         self.vg._supports_lvchange_ignoreskipactivation = None
-        with mock.patch.object(processutils, 'execute',
+        with mock.patch.object(priv_rootwrap, 'execute',
                                side_effect=self.fake_old_lvm_version):
             self.assertFalse(self.vg.supports_lvchange_ignoreskipactivation)
 
         self.vg._supports_lvchange_ignoreskipactivation = None
 
-    def test_thin_pool_creation(self):
-
+    def test_thin_pool_creation_manual(self):
         # The size of fake-vg volume group is 10g, so the calculated thin
         # pool size should be 9.5g (95% of 10g).
-        self.assertEqual("9.5g", self.vg.create_thin_pool())
-
-        # Passing a size parameter should result in a thin pool of that exact
-        # size.
-        for size in ("1g", "1.2g", "1.75g"):
-            self.assertEqual(size, self.vg.create_thin_pool(size_str=size))
+        self.vg.create_thin_pool()
 
     def test_thin_pool_provisioned_capacity(self):
         self.vg.vg_thin_pool = "test-prov-cap-pool-unit"
         self.vg.vg_name = 'test-prov-cap-vg-unit'
         self.assertEqual(
-            "9.5g",
+            None,
             self.vg.create_thin_pool(name=self.vg.vg_thin_pool))
         self.assertEqual("9.50", self.vg.vg_thin_pool_size)
         self.assertEqual(7.6, self.vg.vg_thin_pool_free_space)
@@ -300,7 +301,7 @@ class BrickLvmTestCase(base.TestCase):
         self.vg.vg_thin_pool = "test-prov-cap-pool-no-unit"
         self.vg.vg_name = 'test-prov-cap-vg-no-unit'
         self.assertEqual(
-            "9.5g",
+            None,
             self.vg.create_thin_pool(name=self.vg.vg_thin_pool))
         self.assertEqual("9.50", self.vg.vg_thin_pool_size)
         self.assertEqual(7.6, self.vg.vg_thin_pool_free_space)
@@ -327,7 +328,7 @@ class BrickLvmTestCase(base.TestCase):
             self.assertEqual(pool_path, cmd[-1])
 
         self.vg._executor = executor
-        self.vg.create_thin_pool(pool_name, "1G")
+        self.vg.create_thin_pool(pool_name)
         self.vg.create_volume("test", "1G", lv_type='thin')
 
         self.assertEqual(pool_name, self.vg.vg_thin_pool)
@@ -363,3 +364,29 @@ class BrickLvmTestCase(base.TestCase):
         self.vg.vg_name = "test-volumes"
         self.vg.extend_volume("test", "2G")
         self.assertFalse(self.vg.deactivate_lv.called)
+
+    def test_lv_deactivate(self):
+        with mock.patch.object(self.vg, '_execute'):
+            is_active_mock = mock.Mock()
+            is_active_mock.return_value = False
+            self.vg._lv_is_active = is_active_mock
+            self.vg.create_volume('test', '1G')
+            self.vg.deactivate_lv('test')
+
+    def test_lv_deactivate_timeout(self):
+        with mock.patch.object(self.vg, '_execute'):
+            is_active_mock = mock.Mock()
+            is_active_mock.return_value = True
+            self.vg._lv_is_active = is_active_mock
+            self.vg.create_volume('test', '1G')
+            self.assertRaises(exception.VolumeNotDeactivated,
+                              self.vg.deactivate_lv, 'test')
+
+    def test_lv_is_active(self):
+        self.vg.create_volume('test', '1G')
+        with mock.patch.object(self.vg, '_execute',
+                               return_value=['owi-a---', '']):
+            self.assertTrue(self.vg._lv_is_active('test'))
+        with mock.patch.object(self.vg, '_execute',
+                               return_value=['owi-----', '']):
+            self.assertFalse(self.vg._lv_is_active('test'))

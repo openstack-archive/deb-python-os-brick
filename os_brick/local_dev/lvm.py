@@ -24,6 +24,7 @@ import re
 from os_brick import exception
 from os_brick import executor
 from os_brick.i18n import _LE, _LI
+from os_brick.privileged import rootwrap as priv_rootwrap
 from os_brick import utils
 from oslo_concurrency import processutils as putils
 from oslo_log import log as logging
@@ -41,7 +42,7 @@ class LVM(executor.Executor):
 
     def __init__(self, vg_name, root_helper, create_vg=False,
                  physical_volumes=None, lvm_type='default',
-                 executor=putils.execute, lvm_conf=None):
+                 executor=None, lvm_conf=None):
 
         """Initialize the LVM object.
 
@@ -197,9 +198,9 @@ class LVM(executor.Executor):
         """
 
         cmd = LVM.LVM_CMD_PREFIX + ['vgs', '--version']
-        (out, _err) = putils.execute(*cmd,
-                                     root_helper=root_helper,
-                                     run_as_root=True)
+        (out, _err) = priv_rootwrap.execute(*cmd,
+                                            root_helper=root_helper,
+                                            run_as_root=True)
         lines = out.split('\n')
 
         for line in lines:
@@ -258,6 +259,19 @@ class LVM(executor.Executor):
 
         return self._supports_lvchange_ignoreskipactivation
 
+    @property
+    def supports_full_pool_create(self):
+        """Property indicating whether 100% pool creation is supported.
+
+        Check for LVM version >= 2.02.115.
+        Ref: https://bugzilla.redhat.com/show_bug.cgi?id=998347
+        """
+
+        if self.get_lvm_version(self._root_helper) >= (2, 2, 115):
+            return True
+        else:
+            return False
+
     @staticmethod
     def get_lv_info(root_helper, vg_name=None, lv_name=None):
         """Retrieve info about LVs (all, in a VG, or a single LV).
@@ -277,9 +291,9 @@ class LVM(executor.Executor):
             cmd.append(vg_name)
 
         try:
-            (out, _err) = putils.execute(*cmd,
-                                         root_helper=root_helper,
-                                         run_as_root=True)
+            (out, _err) = priv_rootwrap.execute(*cmd,
+                                                root_helper=root_helper,
+                                                run_as_root=True)
         except putils.ProcessExecutionError as err:
             with excutils.save_and_reraise_exception(reraise=True) as ctx:
                 if "not found" in err.stderr or "Failed to find" in err.stderr:
@@ -335,9 +349,9 @@ class LVM(executor.Executor):
                                     '-o', 'vg_name,name,size,free',
                                     '--separator', field_sep,
                                     '--nosuffix']
-        (out, _err) = putils.execute(*cmd,
-                                     root_helper=root_helper,
-                                     run_as_root=True)
+        (out, _err) = priv_rootwrap.execute(*cmd,
+                                            root_helper=root_helper,
+                                            run_as_root=True)
 
         pvs = out.split()
         if vg_name is not None:
@@ -379,9 +393,9 @@ class LVM(executor.Executor):
         if vg_name is not None:
             cmd.append(vg_name)
 
-        (out, _err) = putils.execute(*cmd,
-                                     root_helper=root_helper,
-                                     run_as_root=True)
+        (out, _err) = priv_rootwrap.execute(*cmd,
+                                            root_helper=root_helper,
+                                            run_as_root=True)
         vg_list = []
         if out is not None:
             vgs = out.split()
@@ -477,10 +491,13 @@ class LVM(executor.Executor):
         # make sure volume group information is current
         self.update_volume_group_info()
 
-        # leave 5% free for metadata
-        return "%sg" % (self.vg_free_space * 0.95)
+        if LVM.supports_full_pool_create:
+            return ["-l", "100%FREE"]
 
-    def create_thin_pool(self, name=None, size_str=None):
+        # leave 5% free for metadata
+        return ["-L", "%sg" % (self.vg_free_space * 0.95)]
+
+    def create_thin_pool(self, name=None):
         """Creates a thin provisioning pool for this VG.
 
         The syntax here is slightly different than the default
@@ -488,7 +505,6 @@ class LVM(executor.Executor):
         and do it.
 
         :param name: Name to use for pool, default is "<vg-name>-pool"
-        :param size_str: Size to allocate for pool, default is entire VG
         :returns: The size string passed to the lvcreate command
 
         """
@@ -504,14 +520,15 @@ class LVM(executor.Executor):
 
         vg_pool_name = '%s/%s' % (self.vg_name, name)
 
-        if not size_str:
-            size_str = self._calculate_thin_pool_size()
+        size_args = self._calculate_thin_pool_size()
 
-        cmd = LVM.LVM_CMD_PREFIX + ['lvcreate', '-T', '-L', size_str,
-                                    vg_pool_name]
+        cmd = LVM.LVM_CMD_PREFIX + ['lvcreate', '-T']
+        cmd.extend(size_args)
+        cmd.append(vg_pool_name)
+
         LOG.debug("Creating thin pool '%(pool)s' with size %(size)s of "
                   "total %(free)sg", {'pool': vg_pool_name,
-                                      'size': size_str,
+                                      'size': size_args,
                                       'free': self.vg_free_space})
 
         self._execute(*cmd,
@@ -519,7 +536,8 @@ class LVM(executor.Executor):
                       run_as_root=True)
 
         self.vg_thin_pool = name
-        return size_str
+
+        return
 
     def create_volume(self, name, size_str, lv_type='default', mirror_count=0):
         """Creates a logical volume on the object's VG.
@@ -598,6 +616,20 @@ class LVM(executor.Executor):
             return name
         return '_' + name
 
+    def _lv_is_active(self, name):
+        cmd = LVM.LVM_CMD_PREFIX + ['lvdisplay', '--noheading', '-C', '-o',
+                                    'Attr', '%s/%s' % (self.vg_name, name)]
+        out, _err = self._execute(*cmd,
+                                  root_helper=self._root_helper,
+                                  run_as_root=True)
+        if out:
+            out = out.strip()
+            # An example output might be '-wi-a----'; the 4th index specifies
+            # the status of the volume. 'a' for active, '-' for inactive.
+            if (out[4] == 'a'):
+                return True
+        return False
+
     def deactivate_lv(self, name):
         lv_path = self.vg_name + '/' + self._mangle_lv_name(name)
         cmd = ['lvchange', '-a', 'n']
@@ -612,6 +644,21 @@ class LVM(executor.Executor):
             LOG.error(_LE('StdOut  :%s'), err.stdout)
             LOG.error(_LE('StdErr  :%s'), err.stderr)
             raise
+
+        # Wait until lv is deactivated to return in
+        # order to prevent a race condition.
+        self._wait_for_volume_deactivation(name)
+
+    @utils.retry(exceptions=exception.VolumeNotDeactivated, retries=3,
+                 backoff_rate=1)
+    def _wait_for_volume_deactivation(self, name):
+        LOG.debug("Checking to see if volume %s has been deactivated.",
+                  name)
+        if self._lv_is_active(name):
+            LOG.debug("Volume %s is still active.", name)
+            raise exception.VolumeNotDeactivated(name=name)
+        else:
+            LOG.debug("Volume %s has been deactivated.", name)
 
     def activate_lv(self, name, is_snapshot=False, permanent=False):
         """Ensure that logical volume/snapshot logical volume is activated.

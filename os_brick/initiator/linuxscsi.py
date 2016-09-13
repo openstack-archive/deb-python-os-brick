@@ -25,8 +25,10 @@ from oslo_log import log as logging
 
 from os_brick import exception
 from os_brick import executor
+from os_brick.i18n import _LE
 from os_brick.i18n import _LI
 from os_brick.i18n import _LW
+from os_brick.privileged import rootwrap as priv_rootwrap
 from os_brick import utils
 
 LOG = logging.getLogger(__name__)
@@ -39,11 +41,6 @@ MULTIPATH_DEVICE_ACTIONS = ['unchanged:', 'reject:', 'reload:',
 
 
 class LinuxSCSI(executor.Executor):
-    def __init__(self, root_helper, execute=putils.execute,
-                 *args, **kwargs):
-        super(LinuxSCSI, self).__init__(root_helper, execute,
-                                        *args, **kwargs)
-
     def echo_scsi_command(self, path, content):
         """Used to echo strings to scsi subsystem."""
 
@@ -109,11 +106,27 @@ class LinuxSCSI(executor.Executor):
     def get_scsi_wwn(self, path):
         """Read the WWN from page 0x83 value for a SCSI device."""
 
-        (out, _err) = self._execute('scsi_id', '--page', '0x83',
+        (out, _err) = self._execute('/lib/udev/scsi_id', '--page', '0x83',
                                     '--whitelisted', path,
                                     run_as_root=True,
                                     root_helper=self._root_helper)
         return out.strip()
+
+    @staticmethod
+    def is_multipath_running(enforce_multipath, root_helper, execute=None):
+        try:
+            if execute is None:
+                execute = priv_rootwrap.execute
+            execute('multipathd', 'show', 'status',
+                    run_as_root=True, root_helper=root_helper)
+        except putils.ProcessExecutionError as err:
+            LOG.error(_LE('multipathd is not running: exit code %(err)s'),
+                      {'err': err.exit_code})
+            if enforce_multipath:
+                raise
+            return False
+
+        return True
 
     def remove_multipath_device(self, device):
         """This removes LUNs associated with a multipath device
@@ -123,11 +136,11 @@ class LinuxSCSI(executor.Executor):
         LOG.debug("remove multipath device %s", device)
         mpath_dev = self.find_multipath_device(device)
         if mpath_dev:
+            self.flush_multipath_device(mpath_dev['id'])
             devices = mpath_dev['devices']
             LOG.debug("multipath LUNs to remove %s", devices)
             for device in devices:
                 self.remove_scsi_device(device['device'])
-            self.flush_multipath_device(mpath_dev['id'])
 
     def flush_device_io(self, device):
         """This is used to flush any remaining IO in the buffers."""

@@ -1,3 +1,9 @@
+*/.*
+!.coveragerc
+!.gitignore
+!.mailmap
+!.testr.conf
+
 *.py[cod]
 
 # C extensions
@@ -29,6 +35,7 @@ nosetests.xml
 .venv
 tools/lintstack.head.py
 tools/pylint_exceptions
+cover
 
 # Translations
 *.mo
