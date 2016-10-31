@@ -1,0 +1,11 @@
+Code-Review+2: Huang Zhiteng <winston.d@gmail.com>
+Code-Review+1: JiWei <ji.wei3@zte.com.cn>
+Code-Review-1: Duncan Thomas <duncan.thomas@gmail.com>
+Code-Review+1: Erlon R. Cruz <sombrafam@gmail.com>
+Workflow+1: John Griffith <john.griffith8@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Sat, 29 Oct 2016 20:06:29 +0000
+Reviewed-on: https://review.openstack.org/356532
+Project: openstack/deb-python-os-brick
+Branch: refs/heads/master
