@@ -1,0 +1,13 @@
+Code-Review+2: Sean McGinnis <sean.mcginnis@gmail.com>
+Code-Review+1: Erlon R. Cruz <sombrafam@gmail.com>
+Code-Review+1: Walter A. Boring IV (hemna) <waboring@hemna.com>
+Code-Review+1: Vipin Balachandran <vbala@vmware.com>
+Code-Review+1: Jon Bernard <jobernar@redhat.com>
+Code-Review+2: Jay Bryant <jsbryant@us.ibm.com>
+Workflow+1: Jay Bryant <jsbryant@us.ibm.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 01 Nov 2016 17:32:59 +0000
+Reviewed-on: https://review.openstack.org/386067
+Project: openstack/deb-python-os-brick
+Branch: refs/heads/stable/newton
