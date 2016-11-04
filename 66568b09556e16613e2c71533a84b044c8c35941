@@ -1,0 +1,8 @@
+Code-Review+2: Sean McGinnis <sean.mcginnis@gmail.com>
+Workflow+1: Sean McGinnis <sean.mcginnis@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 04 Nov 2016 16:00:44 +0000
+Reviewed-on: https://review.openstack.org/383308
+Project: openstack/deb-python-os-brick
+Branch: refs/heads/master
