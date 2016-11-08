@@ -1,0 +1,11 @@
+Code-Review+2: John Griffith <john.griffith8@gmail.com>
+Code-Review+1: Arne Recknagel <arecknag@de.ibm.com>
+Code-Review+1: sahid <sahid.ferdjaoui@redhat.com>
+Code-Review+2: Walter A. Boring IV (hemna) <waboring@hemna.com>
+Workflow+1: Walter A. Boring IV (hemna) <waboring@hemna.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 07 Nov 2016 22:37:52 +0000
+Reviewed-on: https://review.openstack.org/393941
+Project: openstack/deb-python-os-brick
+Branch: refs/heads/master
