@@ -1,0 +1,9 @@
+Code-Review+2: Eric Harney <eharney@redhat.com>
+Code-Review+2: Patrick East <patrick.east@purestorage.com>
+Workflow+1: Patrick East <patrick.east@purestorage.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 21 Dec 2016 06:39:12 +0000
+Reviewed-on: https://review.openstack.org/410972
+Project: openstack/deb-python-os-brick
+Branch: refs/heads/master
