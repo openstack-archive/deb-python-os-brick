@@ -1,0 +1,10 @@
+Code-Review+2: Eric Harney <eharney@redhat.com>
+Code-Review+2: Sean McGinnis <sean.mcginnis@gmail.com>
+Code-Review+2: Mike Perez <thingee@gmail.com>
+Workflow+1: Mike Perez <thingee@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 23 Dec 2016 23:22:19 +0000
+Reviewed-on: https://review.openstack.org/406066
+Project: openstack/deb-python-os-brick
+Branch: refs/heads/stable/newton
