@@ -1,0 +1,9 @@
+Code-Review+2: Walter A. Boring IV (hemna) <waboring@hemna.com>
+Code-Review+2: xing-yang <xing.yang@emc.com>
+Workflow+1: xing-yang <xing.yang@emc.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 09 Jan 2017 06:07:45 +0000
+Reviewed-on: https://review.openstack.org/410977
+Project: openstack/deb-python-os-brick
+Branch: refs/heads/master
