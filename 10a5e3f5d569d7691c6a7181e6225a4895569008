@@ -1,0 +1,10 @@
+Code-Review+2: Sean McGinnis <sean.mcginnis@gmail.com>
+Code-Review+2: Scott DAngelo <scott.dangelo@gmail.com>
+Code-Review+1: Juan Antonio Osorio Robles <jaosorior@redhat.com>
+Workflow+1: Scott DAngelo <scott.dangelo@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 24 Jan 2017 17:18:45 +0000
+Reviewed-on: https://review.openstack.org/424324
+Project: openstack/deb-python-os-brick
+Branch: refs/heads/master
