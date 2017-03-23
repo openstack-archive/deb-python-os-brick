@@ -1,0 +1,9 @@
+Code-Review+2: Walter A. Boring IV (hemna) <waboring@hemna.com>
+Code-Review+2: Jay Bryant <jungleboyj@electronicjungle.net>
+Workflow+1: Jay Bryant <jungleboyj@electronicjungle.net>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 10 Mar 2017 16:56:18 +0000
+Reviewed-on: https://review.openstack.org/433104
+Project: openstack/deb-python-os-brick
+Branch: refs/heads/master
