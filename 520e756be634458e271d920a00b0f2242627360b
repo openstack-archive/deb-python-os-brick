@@ -1,0 +1,9 @@
+Code-Review+2: Eric Harney <eharney@redhat.com>
+Code-Review+2: xing-yang <xing.yang@emc.com>
+Workflow+1: xing-yang <xing.yang@emc.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 21 Apr 2017 01:06:27 +0000
+Reviewed-on: https://review.openstack.org/458187
+Project: openstack/deb-python-os-brick
+Branch: refs/heads/master
