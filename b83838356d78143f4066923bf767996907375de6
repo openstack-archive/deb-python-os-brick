@@ -1,0 +1,10 @@
+Code-Review+2: xing-yang <xing.yang@emc.com>
+Code-Review+1: Daniel Pawlik <daniel.pawlik@corp.ovh.com>
+Code-Review+2: Scott DAngelo <scott.dangelo@gmail.com>
+Workflow+1: Scott DAngelo <scott.dangelo@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 14 Jun 2017 14:46:04 +0000
+Reviewed-on: https://review.openstack.org/472211
+Project: openstack/deb-python-os-brick
+Branch: refs/heads/master
