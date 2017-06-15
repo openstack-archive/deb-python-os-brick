@@ -1,0 +1,9 @@
+Code-Review+2: Patrick East <patrick.east@purestorage.com>
+Code-Review+2: Sean McGinnis <sean.mcginnis@gmail.com>
+Workflow+1: Sean McGinnis <sean.mcginnis@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 15 Jun 2017 23:12:38 +0000
+Reviewed-on: https://review.openstack.org/455392
+Project: openstack/deb-python-os-brick
+Branch: refs/heads/master
