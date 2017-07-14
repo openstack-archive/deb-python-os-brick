@@ -1,0 +1,10 @@
+Code-Review+2: Sean McGinnis <sean.mcginnis@gmail.com>
+Code-Review+2: Walter A. Boring IV (hemna) <waboring@hemna.com>
+Workflow+1: Walter A. Boring IV (hemna) <waboring@hemna.com>
+Workflow+1: Gorka Eguileor <geguileo@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 14 Jul 2017 07:16:14 +0000
+Reviewed-on: https://review.openstack.org/479909
+Project: openstack/deb-python-os-brick
+Branch: refs/heads/master
